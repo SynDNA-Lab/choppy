@@ -249,7 +249,6 @@ def main():
         motif=args.boundary_motif
     )
     # Step 2: Merge adjacent fragments where possible
-    #import pdb; pdb.set_trace()
     merged_fragments = merge_fragments(raw_fragments, args.max_size)
 
     (record, frag_records) = annotate_fragments(input_record, merged_fragments)

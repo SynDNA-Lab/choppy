@@ -29,4 +29,4 @@ python3 fragment_annotator.py lambda_genome-NC_001416_hfanno.gb \
     -f lambda_genome-NC_001416_hfanno_fragments.fa
 ```
 ## Acknowledgement
-Initial prototype (not part of this code base) was written by [@dglaizal](https://github.com/dglaizal
+Initial prototype (not part of this code base) was written by [@dglaizal](https://github.com/dglaizal)
