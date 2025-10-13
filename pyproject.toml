@@ -1,0 +1,45 @@
+[tool.poetry]
+name = "tarnche"
+version = "0.1.0"
+description = "Cut a sequence into pieces with hanging overlaps"
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+license = "MIT"
+keywords = ["bioinformatics", "DNA", "TAR cloning", "homology", "recombination"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+]
+homepage = "https://github.com/SynDNA-Lab/TARnche"
+repository = "https://github.com/SynDNA-Lab/TARnche"
+documentation = "https://github.com/SynDNA-Lab/TARnche"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+bio = "^1.8.0"
+tqdm = "^4.64.0"
+click = "^8.3.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.0"
+pytest-cov = "^4.0"
+black = "^23.0"
+flake8 = "^6.0"
+mypy = "^1.0"
+
+[tool.poetry.group.docs.dependencies]
+sphinx = "^5.0"
+sphinx-rtd-theme = "^1.0"
+
+[tool.poetry.scripts]
+tarnche-homology = "tarnche.homology_finder:main"
+tarnche-fragment = "tarnche.fragment_annotator:main"
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
