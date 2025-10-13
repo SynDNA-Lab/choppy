@@ -1,7 +1,3 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-import argparse
 from pathlib import Path
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
@@ -10,7 +6,7 @@ from tqdm import tqdm
 from typing import List, Dict, Union
 
 
-def parse_sequence_files(file_paths: Union[str, List[str]]) -> List[SeqRecord]:
+def _parse_sequence_files(file_paths: Union[str, List[str]]) -> List[SeqRecord]:
     """
     Parse one or multiple sequence files (GenBank or FASTA) and return list of SeqRecord objects.
 
@@ -26,11 +22,10 @@ def parse_sequence_files(file_paths: Union[str, List[str]]) -> List[SeqRecord]:
     records = []
     for file_path in file_paths:
         file_ext = Path(file_path).suffix.lower()
-        format_type = "genbank" if file_ext in [".gb", ".gbk", ".genbank"] else "fasta"
-
         if file_ext not in [".gb", ".gbk", ".genbank", ".fa"]:
             raise Exception(f"Filetype of file '{file_path}' is not supported.")
 
+        format_type = "genbank" if file_ext in [".gb", ".gbk", ".genbank"] else "fasta"
         # Parse all sequences in the file
         records.extend(list(SeqIO.parse(file_path, format_type)))
 
@@ -271,72 +266,68 @@ def create_annotated_record(
     return record
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Find non-homologous regions between sequences"
-    )
-    parser.add_argument(
-        "query_sequence", help="Path to query sequence file(s) (GenBank or FASTA)"
-    )
-    parser.add_argument(
-        "-b",
-        "--background",
-        nargs="+",
-        required=True,
-        help="Path(s) to background sequence file(s) (GenBank or FASTA)",
-    )
-    parser.add_argument(
-        "-k", "--kmer-size", type=int, default=20, help="Size of k-mers (default: 20)"
-    )
-    parser.add_argument(
-        "-t",
-        "--threshold",
-        type=int,
-        default=60,
-        help="Minimum size of non-homologous regions to report (default: 60)",
-    )
-    parser.add_argument(
-        "-o",
-        "--output",
-        default="annotated_sequences.gb",
-        help="Output file name (default: annotated_sequences.gb)",
-    )
+# def main():
+#     parser = argparse.ArgumentParser(
+#         description="Find non-homologous regions between sequences"
+#     )
+#     parser.add_argument(
+#         "query_sequence", help="Path to query sequence file(s) (GenBank or FASTA)"
+#     )
+#     parser.add_argument(
+#         "-b",
+#         "--background",
+#         nargs="+",
+#         required=True,
+#         help="Path(s) to background sequence file(s) (GenBank or FASTA)",
+#     )
+#     parser.add_argument(
+#         "-k", "--kmer-size", type=int, default=20, help="Size of k-mers (default: 20)"
+#     )
+#     parser.add_argument(
+#         "-t",
+#         "--threshold",
+#         type=int,
+#         default=60,
+#         help="Minimum size of non-homologous regions to report (default: 60)",
+#     )
+#     parser.add_argument(
+#         "-o",
+#         "--output",
+#         default="annotated_sequences.gb",
+#         help="Output file name (default: annotated_sequences.gb)",
+#     )
 
-    args = parser.parse_args()
+#     args = parser.parse_args()
 
-    # Parse input sequences
-    query_sequences = parse_sequence_files(args.query_sequence)
-    background_sequences = parse_sequence_files(args.background)
+#     # Parse input sequences
+#     query_sequences = parse_sequence_files(args.query_sequence)
+#     background_sequences = parse_sequence_files(args.background)
 
-    # Process sequences and get k-mer dictionaries
-    kmer_dicts = process_sequences(
-        background_sequences, query_sequences, args.kmer_size
-    )
+#     # Process sequences and get k-mer dictionaries
+#     kmer_dicts = process_sequences(
+#         background_sequences, query_sequences, args.kmer_size
+#     )
 
-    # Process each query sequence
-    output_records = []
-    for query_seq in query_sequences:
-        # Find non-homologous regions
-        regions = find_non_homologous_regions(
-            len(query_seq.seq), kmer_dicts[query_seq.id], args.kmer_size, args.threshold
-        )
+#     # Process each query sequence
+#     output_records = []
+#     for query_seq in query_sequences:
+#         # Find non-homologous regions
+#         regions = find_non_homologous_regions(
+#             len(query_seq.seq), kmer_dicts[query_seq.id], args.kmer_size, args.threshold
+#         )
 
-        # Create annotated record
-        output_record = create_annotated_record(query_seq, regions)
-        output_records.append(output_record)
+#         # Create annotated record
+#         output_record = create_annotated_record(query_seq, regions)
+#         output_records.append(output_record)
 
-    # Write output file
-    output_format = (
-        "genbank" if args.output.endswith((".gb", ".gbk", ".genbank")) else "fasta"
-    )
-    with open(args.output, "w") as handle:
-        SeqIO.write(output_records, handle, output_format)
+#     # Write output file
+#     output_format = (
+#         "genbank" if args.output.endswith((".gb", ".gbk", ".genbank")) else "fasta"
+#     )
+#     with open(args.output, "w") as handle:
+#         SeqIO.write(output_records, handle, output_format)
 
-    print(
-        f"Processed {len(query_sequences)} query sequences against {len(background_sequences)} background sequences"
-    )
-    print(f"Wrote results to {args.output}")
-
-
-if __name__ == "__main__":
-    main()
+#     print(
+#         f"Processed {len(query_sequences)} query sequences against {len(background_sequences)} background sequences"
+#     )
+#     print(f"Wrote results to {args.output}")
