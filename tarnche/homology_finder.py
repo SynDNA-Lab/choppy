@@ -32,7 +32,7 @@ def _parse_sequence_files(file_paths: Union[str, List[str]]) -> List[SeqRecord]:
     return records
 
 
-def create_kmer_dictionary(sequence: SeqRecord, kmer_size: int) -> dict:
+def _create_kmer_dictionary(sequence: SeqRecord, kmer_size: int) -> dict:
     """
     Create a dictionary of k-mers and their positions in the sequence.
 

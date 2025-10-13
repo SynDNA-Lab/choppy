@@ -1,11 +1,9 @@
 """
-Tests for the fragment annotator module.
+Tests for the homology finder module.
 """
-
 import pytest
-import os
 from pathlib import Path
-from tarnche.homology_finder import _parse_sequence_files as parse_sequence_files
+from tarnche.homology_finder import _parse_sequence_files
 
 
 def get_test_data_path(filename):
@@ -16,7 +14,7 @@ def get_test_data_path(filename):
 def test_read_fasta_file():
     """Test reading a FASTA file."""
     fasta_path = get_test_data_path("test_sequence.fa")
-    sequences = parse_sequence_files(str(fasta_path))
+    sequences = _parse_sequence_files(str(fasta_path))
     
     assert len(sequences) == 1, "Should have exactly one sequence"
     assert len(sequences[0].seq) == 10, "Sequence should be 10 bases long"
@@ -26,7 +24,7 @@ def test_read_fasta_file():
 def test_read_genbank_file():
     """Test reading a GenBank file."""
     gb_path = get_test_data_path("test_sequences.gb")
-    sequences = parse_sequence_files(str(gb_path))
+    sequences = _parse_sequence_files(str(gb_path))
     
     assert len(sequences) == 2, "Should have exactly two sequences"
     assert len(sequences[0].seq) == 5, "First sequence should be 5 bases long"
@@ -40,7 +38,7 @@ def test_read_multiple_files():
     fasta_path = get_test_data_path("test_sequence.fa")
     gb_path = get_test_data_path("test_sequences.gb")
     
-    sequences = parse_sequence_files([str(fasta_path), str(gb_path)])
+    sequences = _parse_sequence_files([str(fasta_path), str(gb_path)])
     
     assert len(sequences) == 3, "Should have three sequences total"
     
@@ -55,11 +53,11 @@ def test_read_csv_file_error():
     csv_path = get_test_data_path("test_file.csv")
     
     with pytest.raises(Exception):
-        parse_sequence_files(str(csv_path))
+        _parse_sequence_files(str(csv_path))
 
 
 def test_read_nonexistent_file():
     """Test that reading a non-existent file raises an error."""
     with pytest.raises(FileNotFoundError):
-        parse_sequence_files("nonexistent_file.fa")
+        _parse_sequence_files("nonexistent_file.fa")
 
