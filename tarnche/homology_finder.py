@@ -88,42 +88,50 @@ def merge_tries(tries: List[mt.Trie]) -> mt.Trie:
     
     return mt.Trie(all_kmers)
 
-def process_sequences(
-    background_sequences: List[SeqRecord],
-    query_sequences: List[SeqRecord],
-    kmer_size: int,
-) -> Dict[str, dict]:
+def process_background_sequences(
+    background_sequences: List[SeqRecord], kmer_size: int
+) -> mt.Trie:
     """
-    Process background and query sequences to create k-mer dictionaries.
+    Process background sequences to create a combined k-mer trie.
 
     Args:
         background_sequences (List[SeqRecord]): List of background sequences
-        query_sequences (List[SeqRecord]): List of query sequences
         kmer_size (int): Size of k-mers
 
     Returns:
-        Dict[str, dict]: Dictionary of k-mer dictionaries for each query sequence
+        mt.Trie: Combined k-mer trie from all background sequences
+    """
+    tries = []
+    for bg_seq in background_sequences:
+        trie = create_kmer_trie(bg_seq, kmer_size, bg=True)
+        tries.append(trie)
+
+    if tries:
+        combined_trie = merge_tries(tries)
+    else:
+        combined_trie = mt.Trie()
+
+    return combined_trie
+
+def process_query_sequences(
+    query_sequences: List[SeqRecord], kmer_size: int
+) -> Dict[str, mt.Trie]:
+    """
+    Process query sequences to create k-mer tries for each sequence.
+
+    Args:
+        query_sequences (List[SeqRecord]): List of query sequences
+        kmer_size (int): Size of k-mers 
+    
+    Returns:
+        Dict[str, mt.Trie]: Dictionary of k-mer tries for each query sequence
     """
     results = {}
-
     for query_seq in query_sequences:
-        # Initialize empty k-mer dictionary
-        kmer_dict = {}
-
-        # Process query sequences first
-        offset = 0
-        kmer_dict = create_kmer_dictionary(query_seq, kmer_size)
-        offset += len(query_seq)
-        # Update dictionary with background sequences
-        for bg_seq in background_sequences:
-            update_kmer_dictionary(kmer_dict, bg_seq, kmer_size, offset)
-            offset += len(bg_seq)
-
-        # Store results for this query sequence
-        results[query_seq.id] = kmer_dict
+        trie = create_kmer_trie(query_seq, kmer_size, bg=False)
+        results[query_seq.id] = trie
 
     return results
-
 
 def find_non_homologous_regions(
     sequence_length: int, kmer_dict: dict, kmer_size: int, threshold: int

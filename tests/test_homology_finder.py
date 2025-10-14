@@ -6,7 +6,9 @@ from pathlib import Path
 from tarnche.homology_finder import (
     parse_sequence_files, 
     create_kmer_trie,
-    merge_tries
+    merge_tries,
+    process_background_sequences,
+    process_query_sequences,
 )
 import marisa_trie as mt
 
@@ -91,3 +93,25 @@ def test_merge_tries():
     merged_trie = merge_tries([trie1, trie2])
     assert isinstance(merged_trie, mt.Trie), "Merged result should be a marisa_trie.Trie object"
     assert len(merged_trie) == 10, "Merged trie should have 10 unique k-mers"
+
+def test_process_background_sequences():
+    """Test processing of background sequences."""
+    gb_path = get_test_data_path("test_sequences.gb")
+    sequences = parse_sequence_files(str(gb_path))
+    
+    bg_trie = process_background_sequences(sequences, kmer_size=4)
+    assert isinstance(bg_trie, mt.Trie), "Should return a marisa_trie.Trie object"
+    assert len(bg_trie) == 22, "Background trie should contain 22 unique k-mers"
+
+def test_process_query_sequences():
+    """Test processing of query sequences."""
+    gb_path = get_test_data_path("test_sequences.gb")
+    sequences = parse_sequence_files(str(gb_path))
+    
+    query_tries = process_query_sequences(sequences, kmer_size=4)
+    assert isinstance(query_tries, dict), "Should return a dict of tries"
+    assert len(query_tries) == 2, "dict contains 2 tries"
+    assert all(isinstance(trie, mt.Trie) for trie in query_tries.values()), "All values should be marisa_trie.Trie objects"
+    assert query_tries.keys() == {sequences[0].id, sequences[1].id}, "Keys should match sequence IDs"
+    assert len(query_tries[sequences[0].id]) == 1, "First trie should have 1 k-mers"
+    assert len(query_tries[sequences[1].id]) == 9, "Second trie should have 9 k-mers"
