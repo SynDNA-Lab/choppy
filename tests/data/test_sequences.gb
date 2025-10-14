@@ -1,4 +1,4 @@
-LOCUS       test_seq_1                  5 bp    DNA     linear   UNK 01-JAN-1980
+LOCUS       test_seq_1                  5 bp    DNA     circular   UNK 01-JAN-1980
 DEFINITION  Test sequence 1
 ACCESSION   test_seq_1
 VERSION     test_seq_1
@@ -13,7 +13,7 @@ FEATURES             Location/Qualifiers
 ORIGIN      
         1 atcga
 //
-LOCUS       test_seq_2                  9 bp    DNA     linear   UNK 01-JAN-1980
+LOCUS       test_seq_2                 16 bp    DNA     linear   UNK 01-JAN-1980
 DEFINITION  Test sequence 2
 ACCESSION   test_seq_2
 VERSION     test_seq_2
@@ -22,9 +22,9 @@ SOURCE      synthetic
   ORGANISM  synthetic
             synthetic.
 FEATURES             Location/Qualifiers
-     source          1..9
+     source          1..16
                      /organism="synthetic"
                      /mol_type="genomic DNA"
 ORIGIN      
-        1 gctagctag
+        1 atgcatgcaaggcctt
 //

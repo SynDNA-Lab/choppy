@@ -4,6 +4,7 @@ from Bio.SeqRecord import SeqRecord
 from Bio.SeqFeature import SeqFeature, FeatureLocation
 from tqdm import tqdm
 from typing import List, Dict, Union
+import marisa_trie as mt
 
 
 def _parse_sequence_files(file_paths: Union[str, List[str]]) -> List[SeqRecord]:
@@ -31,107 +32,43 @@ def _parse_sequence_files(file_paths: Union[str, List[str]]) -> List[SeqRecord]:
 
     return records
 
-
-def _create_kmer_dictionary(sequence: SeqRecord, kmer_size: int) -> dict:
+# TO DO: add option to subtract background
+def _create_kmer_trie(sequence: SeqRecord, kmer_size: int, bg: bool) -> mt.Trie:
     """
-    Create a dictionary of k-mers and their positions in the sequence.
-
+    Create a k-mer trie from a sequence, considering both strands.
     Args:
-        sequence (SeqRecord): DNA sequence record
+        sequence (SeqRecord): Input sequence record
         kmer_size (int): Size of k-mers
-
+        bg (bool): If True, create a set of all unique k-mers (for background sequences); 
+            if False, track k-mers appearing more than once (for query sequences)
     Returns:
-        dict: Dictionary with k-mers as keys and positions as values
+        mt.Trie: Trie containing the k-mers (marisa_trie)
     """
-    kmer_dict = {}
 
-    # Check if sequence is circular
-    is_circular = sequence.annotations.get("topology", "").lower() == "circular"
-
-    # Prepare sequence for processing
     sequence_str = str(sequence.seq)
-    if is_circular:
-        sequence_larger = sequence_str + sequence_str[0:kmer_size]
+    sequence_rc_str = str(sequence.seq.reverse_complement())
+
+    if sequence.annotations.get("topology", "").lower() == "circular":
+        sequence_str = sequence_str + sequence_str[0:kmer_size]
+        sequence_rc_str = sequence_rc_str + sequence_rc_str[0:kmer_size]
+
+    if bg:
+        kmers = set()
+        for i in tqdm(range(len(sequence_str) - kmer_size + 1), desc="Processing sequence"):
+            kmers.add(sequence_str[i : i + kmer_size])
+            kmers.add(sequence_rc_str[i : i + kmer_size])
     else:
-        sequence_larger = sequence_str
+        kmers_dict = {}
+        for i in tqdm(range(len(sequence_str) - kmer_size + 1), desc="Processing sequence"):
+            for kmer in (sequence_str[i : i + kmer_size], sequence_rc_str[i : i + kmer_size]):
+                if kmers_dict.get(kmer) is None:
+                    kmers_dict[kmer] = False
+                elif kmers_dict[kmer] is False:
+                    kmers_dict[kmer] = True
+        
+        kmers = set(kmer for kmer, val in kmers_dict.items() if val)
 
-    # Forward strand
-    for nucleotide in tqdm(
-        range(1, len(sequence_str) + 1), desc="Processing forward strand"
-    ):
-        if nucleotide + kmer_size <= len(sequence_larger):
-            kmer = sequence_larger[nucleotide - 1 : nucleotide - 1 + kmer_size]
-            if kmer not in kmer_dict:
-                kmer_dict[kmer] = [nucleotide]
-            else:
-                kmer_dict[kmer].append(nucleotide)
-
-    # Reverse complement strand
-    sequence_rc = sequence.seq.reverse_complement()
-    sequence_rc_str = str(sequence_rc)
-    if is_circular:
-        sequence_rc_larger = sequence_rc_str + sequence_rc_str[0:kmer_size]
-    else:
-        sequence_rc_larger = sequence_rc_str
-
-    for nucleotide in tqdm(
-        range(1, len(sequence_rc_str) + 1), desc="Processing reverse strand"
-    ):
-        if nucleotide + kmer_size <= len(sequence_rc_larger):
-            kmer = sequence_rc_larger[nucleotide - 1 : nucleotide - 1 + kmer_size]
-            if kmer not in kmer_dict:
-                kmer_dict[kmer] = [-nucleotide]
-            else:
-                kmer_dict[kmer].append(-nucleotide)
-
-    return kmer_dict
-
-
-def update_kmer_dictionary(
-    kmer_dict: dict, sequence: SeqRecord, kmer_size: int, offset: int
-):
-    """
-    Update existing k-mer dictionary with positions from another sequence.
-
-    Args:
-        kmer_dict (dict): Existing k-mer dictionary
-        sequence (SeqRecord): DNA sequence record to process
-        kmer_size (int): Size of k-mers
-        offset (int): Position offset for the new sequence
-    """
-    # Check if sequence is circular
-    is_circular = sequence.annotations.get("topology", "").lower() == "circular"
-
-    # Forward strand
-    sequence_str = str(sequence.seq)
-    if is_circular:
-        sequence_larger = sequence_str + sequence_str[0:kmer_size]
-    else:
-        sequence_larger = sequence_str
-
-    for nucleotide in tqdm(
-        range(1, len(sequence_str) + 1), desc="Updating forward strand"
-    ):
-        if nucleotide + kmer_size <= len(sequence_larger):
-            kmer = sequence_larger[nucleotide - 1 : nucleotide - 1 + kmer_size]
-            if kmer in kmer_dict:
-                kmer_dict[kmer].append(nucleotide + offset)
-
-    # Reverse complement strand
-    sequence_rc = sequence.seq.reverse_complement()
-    sequence_rc_str = str(sequence_rc)
-    if is_circular:
-        sequence_rc_larger = sequence_rc_str + sequence_rc_str[0:kmer_size]
-    else:
-        sequence_rc_larger = sequence_rc_str
-
-    for nucleotide in tqdm(
-        range(1, len(sequence_rc_str) + 1), desc="Updating reverse strand"
-    ):
-        if nucleotide + kmer_size <= len(sequence_rc_larger):
-            kmer = sequence_rc_larger[nucleotide - 1 : nucleotide - 1 + kmer_size]
-            if kmer in kmer_dict:
-                kmer_dict[kmer].append(-nucleotide - offset)
+    return mt.Trie(kmers)
 
 
 def process_sequences(
