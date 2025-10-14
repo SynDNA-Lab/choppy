@@ -3,7 +3,11 @@ Tests for the homology finder module.
 """
 import pytest
 from pathlib import Path
-from tarnche.homology_finder import (_parse_sequence_files, _create_kmer_trie)
+from tarnche.homology_finder import (
+    parse_sequence_files, 
+    create_kmer_trie,
+    merge_tries
+)
 import marisa_trie as mt
 
 def get_test_data_path(filename):
@@ -14,7 +18,7 @@ def get_test_data_path(filename):
 def test_read_fasta_file():
     """Test reading a FASTA file."""
     fasta_path = get_test_data_path("test_sequence.fa")
-    sequences = _parse_sequence_files(str(fasta_path))
+    sequences = parse_sequence_files(str(fasta_path))
     
     assert len(sequences) == 1, "Should have exactly one sequence"
     assert len(sequences[0].seq) == 10, "Sequence should be 10 bases long"
@@ -24,7 +28,7 @@ def test_read_fasta_file():
 def test_read_genbank_file():
     """Test reading a GenBank file."""
     gb_path = get_test_data_path("test_sequences.gb")
-    sequences = _parse_sequence_files(str(gb_path))
+    sequences = parse_sequence_files(str(gb_path))
     
     assert len(sequences) == 2, "Should have exactly two sequences"
     assert len(sequences[0].seq) == 5, "First sequence should be 5 bases long"
@@ -38,7 +42,7 @@ def test_read_multiple_files():
     fasta_path = get_test_data_path("test_sequence.fa")
     gb_path = get_test_data_path("test_sequences.gb")
     
-    sequences = _parse_sequence_files([str(fasta_path), str(gb_path)])
+    sequences = parse_sequence_files([str(fasta_path), str(gb_path)])
     
     assert len(sequences) == 3, "Should have three sequences total"
     
@@ -53,26 +57,37 @@ def test_read_csv_file_error():
     csv_path = get_test_data_path("test_file.csv")
     
     with pytest.raises(Exception):
-        _parse_sequence_files(str(csv_path))
+        parse_sequence_files(str(csv_path))
 
 
 def test_read_nonexistent_file():
     """Test that reading a non-existent file raises an error."""
     with pytest.raises(FileNotFoundError):
-        _parse_sequence_files("nonexistent_file.fa")
+        parse_sequence_files("nonexistent_file.fa")
 
 
 def test_kmer_trie():
     """Test k-mer trie creation."""
     gb_path = get_test_data_path("test_sequences.gb")
-    sequences = _parse_sequence_files(str(gb_path))
+    sequences = parse_sequence_files(str(gb_path))
     
     # Create k-mer trie for the first sequence with k=3, bg=True
-    trie_bg = _create_kmer_trie(sequences[0], kmer_size=4, bg=True)
+    trie_bg = create_kmer_trie(sequences[0], kmer_size=4, bg=True)
     assert isinstance(trie_bg, mt.Trie), "Should return a marisa_trie.Trie object"
     assert len(trie_bg) == 9, "Trie should contain 9 unique k-mers (circular sequence)"
     
     # Create k-mer trie for the second sequence with k=4, bg=False
-    trie_query = _create_kmer_trie(sequences[1], kmer_size=4, bg=False)
+    trie_query = create_kmer_trie(sequences[1], kmer_size=4, bg=False)
     assert len(trie_query) == 9, "Trie should contain 9 k-mers (query sequence)"
 
+def test_merge_tries():
+    """Test merging of two k-mer tries."""
+    gb_path = get_test_data_path("test_sequences.gb")
+    sequences = parse_sequence_files(str(gb_path))
+    
+    trie1 = create_kmer_trie(sequences[0], kmer_size=4, bg=False)
+    trie2 = create_kmer_trie(sequences[1], kmer_size=4, bg=False)
+
+    merged_trie = merge_tries([trie1, trie2])
+    assert isinstance(merged_trie, mt.Trie), "Merged result should be a marisa_trie.Trie object"
+    assert len(merged_trie) == 10, "Merged trie should have 10 unique k-mers"

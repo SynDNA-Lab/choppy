@@ -6,7 +6,7 @@ import gc
 from Bio.SeqRecord import SeqRecord
 from tqdm import tqdm
 sys.path.insert(0, '/home/tyranchick/git/TARnche')
-from tarnche.homology_finder import (_parse_sequence_files, create_kmer_dictionary, create_kmer_trie)
+from tarnche.homology_finder import (parse_sequence_files, create_kmer_dictionary, create_kmer_trie)
 # %%
 keys = ['foo', 'bar', 'foobar', 'foo']
 values = [(1, 2), (2, 1), (3, 3), (2, 1)]
@@ -22,7 +22,7 @@ trie['foo']
 b_trie = mt.RecordTrie('<B', [('AAA', (1,)), ('CCC', (0,)), ('AAA', (0,))])
 b_trie['AAA']
 # %%
-seqs = _parse_sequence_files('data/lambda_genome-NC_001416.gb')
+seqs = parse_sequence_files('data/lambda_genome-NC_001416.gb')
 kmer_dict = create_kmer_dictionary(seqs[0], 15)
 sys.getsizeof(kmer_dict) / 1024 / 1024
 # %%

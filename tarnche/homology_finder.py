@@ -7,7 +7,7 @@ from typing import List, Dict, Union
 import marisa_trie as mt
 
 
-def _parse_sequence_files(file_paths: Union[str, List[str]]) -> List[SeqRecord]:
+def parse_sequence_files(file_paths: Union[str, List[str]]) -> List[SeqRecord]:
     """
     Parse one or multiple sequence files (GenBank or FASTA) and return list of SeqRecord objects.
 
@@ -33,14 +33,16 @@ def _parse_sequence_files(file_paths: Union[str, List[str]]) -> List[SeqRecord]:
     return records
 
 # TO DO: add option to subtract background
-def _create_kmer_trie(sequence: SeqRecord, kmer_size: int, bg: bool) -> mt.Trie:
+def create_kmer_trie(sequence: SeqRecord, kmer_size: int, bg: bool) -> mt.Trie:
     """
     Create a k-mer trie from a sequence, considering both strands.
+
     Args:
         sequence (SeqRecord): Input sequence record
         kmer_size (int): Size of k-mers
         bg (bool): If True, create a set of all unique k-mers (for background sequences); 
             if False, track k-mers appearing more than once (for query sequences)
+
     Returns:
         mt.Trie: Trie containing the k-mers (marisa_trie)
     """
@@ -49,8 +51,8 @@ def _create_kmer_trie(sequence: SeqRecord, kmer_size: int, bg: bool) -> mt.Trie:
     sequence_rc_str = str(sequence.seq.reverse_complement())
 
     if sequence.annotations.get("topology", "").lower() == "circular":
-        sequence_str = sequence_str + sequence_str[0:kmer_size]
-        sequence_rc_str = sequence_rc_str + sequence_rc_str[0:kmer_size]
+        sequence_str = sequence_str + sequence_str[0:kmer_size - 1]
+        sequence_rc_str = sequence_rc_str + sequence_rc_str[0:kmer_size - 1]
 
     if bg:
         kmers = set()
@@ -70,6 +72,21 @@ def _create_kmer_trie(sequence: SeqRecord, kmer_size: int, bg: bool) -> mt.Trie:
 
     return mt.Trie(kmers)
 
+def merge_tries(tries: List[mt.Trie]) -> mt.Trie:
+    """
+    Merge multiple marisa_tries into a single trie.
+
+    Args:
+        tries (List[mt.Trie]): List of marisa_trie.Trie objects to merge
+
+    Returns:
+        mt.Trie: Merged marisa_trie.Trie object
+    """
+    all_kmers = set()
+    for trie in tries:
+        all_kmers.update(trie.keys())
+    
+    return mt.Trie(all_kmers)
 
 def process_sequences(
     background_sequences: List[SeqRecord],
