@@ -37,8 +37,7 @@ sphinx = "^5.0"
 sphinx-rtd-theme = "^1.0"
 
 [tool.poetry.scripts]
-tarnche-homology = "tarnche.homology_finder:main"
-tarnche-fragment = "tarnche.fragment_annotator:main"
+tarnche = "tarnche.cli:cli"
 
 
 [build-system]
