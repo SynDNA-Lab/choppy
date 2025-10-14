@@ -9,8 +9,11 @@ from tarnche.homology_finder import (
     merge_tries,
     process_background_sequences,
     process_query_sequences,
+    find_non_homologous_regions
 )
 import marisa_trie as mt
+from Bio.SeqRecord import SeqRecord
+from Bio.Seq import Seq
 
 def get_test_data_path(filename):
     """Get the path to a test data file."""
@@ -119,3 +122,25 @@ def test_process_query_sequences():
     assert len(query_tries[sequences[0].id]) == 1, "First trie should have 1 k-mers"
     assert len(query_tries[sequences[1].id]) == 9, "Second trie should have 9 k-mers"
 
+
+def test_find_non_homologous_regions():
+    """Test finding non-homologous regions."""
+    seq = SeqRecord(Seq("ATGCATGCAAGGCCTT"), id="test", description="test sequence")
+    query_trie = create_kmer_trie(seq, kmer_size=4, bg=False)
+    bg_trie = mt.Trie()
+    regions = find_non_homologous_regions(seq, query_trie, bg_trie, kmer_size=4, threshold=5)
+    assert len(regions) == 1, "Should find one non-homologous region"
+    assert regions[0] == (6, 11), "Non-homologous region should be from index 6 to 11"
+
+    query_seq = SeqRecord(Seq("ATATAACCCCCTTTTTGGGGCCCGCG"), id="test2", description="test sequence 2")
+    bg_seq = SeqRecord(Seq("TATAACCCCCTTTTTGGGG"), id="bg", description="background sequence")
+    query_trie = create_kmer_trie(query_seq, kmer_size=5, bg=False)
+    bg_trie = create_kmer_trie(bg_seq, kmer_size=5, bg=True)
+    regions = find_non_homologous_regions(query_seq, query_trie, bg_trie, kmer_size=5, threshold=5)
+    assert len(regions) == 3, "Should find two non-homologous regions"
+    assert regions[0] == (0, 5), "First non-homologous region should be from index 0 to 5"
+    assert regions[1] == (16, 21), "Second non-homologous region should be from index 16 to 21"
+    assert regions[2] == (19, 26), "Third non-homologous region should be from index 19 to 26"
+    regions = find_non_homologous_regions(query_seq, query_trie, bg_trie, kmer_size=5, threshold=6)
+    assert len(regions) == 1, "Only one region meets the higher threshold"
+    assert regions[0] == (19, 26), "Only the last region meets the higher threshold"

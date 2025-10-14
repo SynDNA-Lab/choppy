@@ -164,12 +164,11 @@ def find_non_homologous_regions(
                 start = i
                 opened = True
         else:
-            if opened and i - start >= threshold:
-                regions.append((start, i))
-            
+            if opened and i - start + kmer_size - 1 >= threshold:
+                regions.append((start, i + kmer_size - 1)) 
             opened = False
-    if opened and len(sequence_str) - kmer_size + 1 - start >= threshold:
-        regions.append((start, len(sequence_str) - kmer_size + 1))
+    if opened and len(sequence_str) - start >= threshold:
+        regions.append((start, len(sequence_str)))
 
     return regions    
 
