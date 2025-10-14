@@ -103,6 +103,9 @@ def test_process_background_sequences():
     assert isinstance(bg_trie, mt.Trie), "Should return a marisa_trie.Trie object"
     assert len(bg_trie) == 22, "Background trie should contain 22 unique k-mers"
 
+    empty_trie = process_background_sequences([], kmer_size=4)
+    assert len(empty_trie) == 0, "Empty input should return an empty trie"
+
 def test_process_query_sequences():
     """Test processing of query sequences."""
     gb_path = get_test_data_path("test_sequences.gb")
@@ -115,3 +118,4 @@ def test_process_query_sequences():
     assert query_tries.keys() == {sequences[0].id, sequences[1].id}, "Keys should match sequence IDs"
     assert len(query_tries[sequences[0].id]) == 1, "First trie should have 1 k-mers"
     assert len(query_tries[sequences[1].id]) == 9, "Second trie should have 9 k-mers"
+

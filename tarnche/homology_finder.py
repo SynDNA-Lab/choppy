@@ -134,61 +134,47 @@ def process_query_sequences(
     return results
 
 def find_non_homologous_regions(
-    sequence_length: int, kmer_dict: dict, kmer_size: int, threshold: int
-) -> dict:
+    sequence: SeqRecord, query_trie: mt.Trie, bg_trie: mt.Trie, kmer_size: int, threshold: int
+) -> list:
     """
-    Find regions without homology based on k-mer positions.
+    Find non-homologous regions in a sequence based on k-mer tries.
 
     Args:
-        sequence_length (int): Length of the sequence
-        kmer_dict (dict): Dictionary of k-mers and their positions
+        sequence (SeqRecord): Input query sequence
+        query_trie (mt.Trie): K-mer trie for the query sequence
+        bg_trie (mt.Trie): K-mer trie for the background sequences
         kmer_size (int): Size of k-mers
         threshold (int): Minimum size of non-homologous regions to report
 
     Returns:
-        dict: Dictionary of non-homologous regions
+        List[(int, int)]: List of tuples representing start and end positions of non-homologous regions
     """
-    # Create a list of all nucleotide positions
-    nucleotide_positions = [i for i in range(sequence_length)]
+    sequence_str = str(sequence.seq)
 
-    # Mark homologous positions
-    for kmer, positions in kmer_dict.items():
-        if len(positions) > 1:
-            for pos in positions:
-                if sequence_length >= pos > 0:
-                    nucleotide_positions[pos : pos + kmer_size] = ["h"] * kmer_size
-                elif -sequence_length <= pos < 0:
-                    start = pos + 1 + sequence_length - kmer_size
-                    end = pos + 1 + sequence_length
-                    nucleotide_positions[start:end] = ["h"] * kmer_size
+    if sequence.annotations.get("topology", "").lower() == "circular":
+        sequence_str = sequence_str + sequence_str[0:kmer_size - 1]
 
-    # Filter out homologous positions
-    non_homologous = [i for i in nucleotide_positions if i != "h"]
+    regions = []
+    start = 0
+    opened = False
+    for i in tqdm(range(len(sequence_str) - kmer_size + 1), desc="Finding non-homologous regions"):
+        kmer = sequence_str[i : i + kmer_size]
+        if kmer not in bg_trie and kmer not in query_trie:
+            if not opened:
+                start = i
+                opened = True
+        else:
+            if opened and i - start >= threshold:
+                regions.append((start, i))
+            
+            opened = False
+    if opened and len(sequence_str) - kmer_size + 1 - start >= threshold:
+        regions.append((start, len(sequence_str) - kmer_size + 1))
 
-    # Find continuous non-homologous regions
-    regions = {}
-    region_count = 1
-    i = 0
-
-    while i < len(non_homologous):
-        start = non_homologous[i]
-        while (
-            i + 1 < len(non_homologous)
-            and non_homologous[i] + 1 == non_homologous[i + 1]
-        ):
-            i += 1
-        end = non_homologous[i]
-
-        if end - start >= threshold:
-            regions[f"Region_{region_count}"] = (start, end)
-            region_count += 1
-        i += 1
-
-    return regions
-
+    return regions    
 
 def create_annotated_record(
-    sequence: SeqRecord, regions: dict, output_format: str = "genbank"
+    sequence: SeqRecord, regions: list
 ) -> SeqRecord:
     """
     Create an annotated sequence record with non-homologous regions.
@@ -196,7 +182,6 @@ def create_annotated_record(
     Args:
         sequence (SeqRecord): Input sequence record
         regions (dict): Dictionary of non-homologous regions
-        output_format (str): Output file format ('genbank' or 'fasta')
 
     Returns:
         SeqRecord: Annotated sequence record
@@ -204,12 +189,12 @@ def create_annotated_record(
     features = getattr(sequence, "features", [])
 
     # Add features for non-homologous regions
-    for region_name, (start, end) in regions.items():
+    for i, (start, end) in enumerate(regions):
         feature = SeqFeature(
             FeatureLocation(start, end),
             type="misc_feature",
             qualifiers={
-                "note": f"Non-homologous region {region_name}",
+                "note": f"Non-homologous region {i + 1}",
                 "label": f"homology_free",
             },
         )
@@ -227,6 +212,26 @@ def create_annotated_record(
 
     return record
 
+def annotate_homology(query_path, background_path, output_path, kmer_size=20, threshold=60):
+
+    query_sequences = parse_sequence_files(query_path)
+    background_sequences = parse_sequence_files(background_path)
+    bg_trie = process_background_sequences(background_sequences, kmer_size)
+    query_tries = process_query_sequences(query_sequences, kmer_size)
+    output_records = []
+    for query_seq in query_sequences:
+        regions = find_non_homologous_regions(
+            query_seq, query_tries[query_seq.id], bg_trie, kmer_size, threshold
+        )
+        output_record = create_annotated_record(query_seq, regions)
+        output_records.append(output_record)
+
+    output_format = (
+        "genbank" if output_path.endswith((".gb", ".gbk", ".genbank")) else "fasta"
+    )
+    with open(output_path, "w") as handle:
+        SeqIO.write(output_records, handle, output_format)
+    
 
 # def main():
 #     parser = argparse.ArgumentParser(
