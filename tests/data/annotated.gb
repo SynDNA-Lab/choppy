@@ -1,0 +1,39 @@
+LOCUS       test_seq_1                 5 bp    DNA              UNK 01-JAN-1980
+DEFINITION  Sequence annotated with non-homologous regions.
+ACCESSION   test_seq_1_annotated
+VERSION     test_seq_1_annotated
+KEYWORDS    .
+SOURCE      .
+  ORGANISM  .
+            .
+FEATURES             Location/Qualifiers
+     source          1..5
+                     /organism="synthetic"
+                     /mol_type="genomic DNA"
+     misc_feature    1..4
+                     /note="Non-homologous region 1"
+                     /label="homology_free"
+     misc_feature    3..8
+                     /note="Non-homologous region 2"
+                     /label="homology_free"
+ORIGIN
+        1 atcga
+//
+LOCUS       test_seq_2                16 bp    DNA              UNK 01-JAN-1980
+DEFINITION  Sequence annotated with non-homologous regions.
+ACCESSION   test_seq_2_annotated
+VERSION     test_seq_2_annotated
+KEYWORDS    .
+SOURCE      .
+  ORGANISM  .
+            .
+FEATURES             Location/Qualifiers
+     source          1..16
+                     /organism="synthetic"
+                     /mol_type="genomic DNA"
+     misc_feature    7..11
+                     /note="Non-homologous region 1"
+                     /label="homology_free"
+ORIGIN
+        1 atgcatgcaa ggcctt
+//

@@ -27,7 +27,6 @@ def cli():
     "-b",
     "--background",
     multiple=True,
-    required=True,
     type=click.Path(exists=True, readable=True),
     help="Path(s) to background sequence file(s) (GenBank or FASTA)",
 )

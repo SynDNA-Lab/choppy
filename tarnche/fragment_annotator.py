@@ -1,23 +1,29 @@
 #!/usr/bin/env python3
 
 import argparse
+import re
+import networkx as nx
 from Bio import SeqIO
 from Bio.SeqFeature import SeqFeature, FeatureLocation
 from Bio.SeqRecord import SeqRecord
 
 
-def extract_no_homology_regions(record):
+def extract_no_homology_regions(record: SeqRecord) -> list[tuple[int, int]]:
     """
     Extracts no homology regions (as (start, end) tuples) from the GenBank feature annotations.
+
+    Args:
+        record (SeqRecord): A Biopython SeqRecord object with non-homology regions annotated as features.
+
+    Returns:
+        list[tuple[int, int]]: A list of (start, end) tuples representing non-homologous regions.
     """
     nohom_regions = []
     for feat in getattr(record, "features", []):
-        if feat.type == "misc_feature":
-            if "label" in feat.qualifiers:
-                if feat.qualifiers["label"] == ["homology_free"]:
-                    start = int(feat.location.start)
-                    end = int(feat.location.end)
-                    nohom_regions.append((start, end))
+        if feat.type == "misc_feature" and "label" in feat.qualifiers and feat.qualifiers["label"] == ["homology_free"]:
+            start = int(feat.location.start)
+            end = int(feat.location.end)
+            nohom_regions.append((start, end))
     # Sort and merge overlapping/adjacent regions for safety
     nohom_regions.sort()
     merged = []
@@ -29,251 +35,100 @@ def extract_no_homology_regions(record):
     return [tuple(x) for x in merged]
 
 
+def get_possible_overlaps(seq_str, nohom_regions, min_overlap, max_overlap, min_step = 10, motif=None):
+    if motif is None:
+        # for free overlaps, we don't care about max_overlap
+        # the smaller the overlap, the better
+        overlaps = get_possible_free_overlaps(nohom_regions, min_overlap, min_step)
+    else:
+        overlaps = get_possible_motif_overlaps(nohom_regions, min_overlap, max_overlap, motif, seq_str)
+
+    overlaps.sort(key=lambda x: x[0])
+    overlaps = list(dict.fromkeys(overlaps))
+    overlaps.insert(0, (0, 0))
+    overlaps.append((len(seq_str), len(seq_str)))
+    return overlaps
+
+def get_possible_free_overlaps(nohom_regions, min_overlap, min_step=10):
+    overlaps = []
+    for region in nohom_regions:
+        for pos in range(region[0] + min_overlap, region[1], min_step):
+            overlaps.append((pos - min_overlap, pos))
+    return overlaps
+
+def get_possible_motif_overlaps(nohom_regions, min_overlap, max_overlap, motif, seq_str):
+    overlaps = []
+    motif_len = len(motif)
+    for region in nohom_regions:
+        motif_positions = [m.start() for m in re.finditer(motif, seq_str, pos=region[0], endpos=region[1])]
+        for pos in motif_positions:
+            next_pos = next(
+                (
+                    p
+                    for p in motif_positions
+                    if p - pos + motif_len - 1 >= min_overlap
+                    and p - pos + motif_len - 1 <= max_overlap
+                ),
+                None,
+            )
+            if next_pos is not None:
+                overlaps.append((pos, next_pos))
+    return overlaps
+
+def construct_overlap_graph(overlaps, min_length, max_length):
+    graph = nx.DiGraph()
+    for i in range(len(overlaps)):
+        too_far = False
+        j = i + 1
+        while not too_far and j < len(overlaps):
+            if overlaps[j][1] - overlaps[i][0] >= min_length:
+                if overlaps[j][1] - overlaps[i][0] <= max_length:
+                    graph.add_edge(overlaps[i], overlaps[j])
+                else:
+                    too_far = True
+            j += 1
+    return graph
+
+def fix_graph(graph, nohom_regions, min_length, max_length, min_overlap):
+    components = list(nx.weaksy_connected_components(graph))
+    comp_span = []
+    for comp in components:
+        min_node = min(comp, key=lambda x: x[0])
+        max_node = max(comp, key=lambda x: x[1])
+        comp_span.append((min_node, max_node))
+    comp_span.sort(key=lambda x: x[0])
+    for i in range(len(comp_span) - 1):
+        print(f"""Warning: Gap from position {comp_span[i][1][1]} to {comp_span[i+1][0][0]} 
+                cannot be covered by a valid fragment. Gap size: {comp_span[i+1][0][0] - comp_span[i][1][1]}.
+                Attempting to fix it by relaxing constraints...
+              """)
+        success = keep_homology_constraint(graph, (comp_span[i][1][1], comp_span[i+1][0][0]), nohom_regions)
+        if not success:
+            print(""""Failed to fix the graph by keeping homology constraint. 
+                    The gap will be closed by unconstrained fragments.
+                """)
+            keep_no_constraint(graph, (comp_span[i][1], comp_span[i+1][0]), min_length, max_length, min_overlap)
+        else:
+            print("Successfully fixed the graph by keeping homology constraint.")
+    return graph
+
+def keep_homology_constraint(graph, gap, nohom_regions):
+    return True
+
+def keep_no_constraint(graph, gap, min_length, max_length, min_overlap):
+    gap_start, gap_end = gap
+    graph.add_edge((gap_start, gap_start), (gap_end, gap_end))
+    return True
+
+def get_shortest_path(graph):
+    if not nx.weakly_connected(graph):
+        graph = fix_graph(graph)
+    return nx.shortest_path(graph, (0, 0), (len(seq), len(seq)))
+
+
 def region_contains(region, start, end):
     rstart, rend = region
     return start >= rstart and end <= rend
-
-
-def find_motif_positions(seq, region, motif, is_start=True):
-    seq_str = str(seq).upper()
-    motif = motif.upper()
-    rstart, rend = region
-    motif_len = len(motif)
-    positions = []
-    if is_start:
-        for pos in range(rstart, rend - motif_len + 1):
-            if seq_str[pos : pos + motif_len] == motif:
-                positions.append(pos)
-    else:
-        for pos in range(rstart + motif_len, rend + 1):
-            if seq_str[pos - motif_len : pos] == motif:
-                positions.append(pos)
-    return positions
-
-
-def fragment_sequence(
-    seq, nohom_regions, min_size, max_size, min_overlap, max_overlap, motif=None
-):
-    seq_length = len(seq)
-    fragments = []
-    prev_end = 0
-    is_first_fragment = True
-    while prev_end < seq_length:
-        result = find_next_fragment(
-            seq,
-            nohom_regions,
-            prev_end,
-            min_size,
-            max_size,
-            min_overlap,
-            max_overlap,
-            motif,
-            force_start_at_zero=is_first_fragment,
-        )
-        is_first_fragment = False
-        if result is None:
-            # Fallback: forcibly advance by min_size (but this will violate constraints)
-            frag_start = prev_end
-            frag_end = min(prev_end + min_size, seq_length)
-            fragments.append((frag_start, frag_end, None, None, None))
-            prev_end = frag_end
-            continue
-        frag_start, frag_end, overlap_start, overlap_end, actual_overlap = result
-        fragments.append(
-            (frag_start, frag_end, overlap_start, overlap_end, actual_overlap)
-        )
-        if overlap_start is not None:
-            prev_end = overlap_start
-        else:
-            prev_end = frag_end
-    return fragments
-
-
-def find_next_fragment(
-    seq,
-    nohom_regions,
-    prev_end,
-    min_size,
-    max_size,
-    min_overlap,
-    max_overlap,
-    motif=None,
-    force_start_at_zero=False,
-):
-    seq_length = len(seq)
-    # If it's the first fragment, always start at 0
-    if force_start_at_zero and prev_end == 0:
-        start = 0
-        # find the largest possible end (max_size) within constraints and motif (if needed)
-        for region2 in nohom_regions:
-            region2_start = max(region2[0], start + min_size)
-            region2_end = min(region2[1], min(start + max_size, seq_length))
-            if region2_end <= region2_start:
-                continue
-            if motif:
-                ends = find_motif_positions(
-                    seq, (region2_start, region2_end), motif, is_start=False
-                )
-            else:
-                ends = list(range(region2_start, region2_end + 1))
-            for end in sorted(ends, reverse=True):
-                frag_len = end - start
-                if frag_len < min_size or frag_len > max_size:
-                    continue
-                # If not last fragment, need overlap in no-homology region and matching motif if set
-                if end < seq_length:
-                    valid_overlap = False
-                    for overlap_region in nohom_regions:
-                        ostart = max(overlap_region[0], end - max_overlap)
-                        oend = min(overlap_region[1], end)
-                        for overlap_len in range(max_overlap, min_overlap - 1, -1):
-                            overlap_start = end - overlap_len
-                            overlap_end = end
-                            if overlap_start < ostart or overlap_end > oend:
-                                continue
-                            if motif:
-                                if (
-                                    str(
-                                        seq[overlap_start : overlap_start + len(motif)]
-                                    ).upper()
-                                    != motif.upper()
-                                ):
-                                    continue
-                            valid_overlap = True
-                            return start, end, overlap_start, overlap_end, overlap_len
-                    if not valid_overlap:
-                        continue
-                else:
-                    return start, end, None, None, None
-        return None  # If nothing is found
-    # Normal case: not the very first fragment
-    for region in nohom_regions:
-        region_start = max(region[0], prev_end)
-        region_end = region[1]
-        if region_end <= region_start:
-            continue
-        starts = []
-        if motif:
-            starts = [
-                p
-                for p in find_motif_positions(
-                    seq, (region_start, region_end), motif, is_start=True
-                )
-                if p >= prev_end
-            ]
-        else:
-            starts = list(range(region_start, region_end))
-        for start in starts:
-            max_frag_end = min(start + max_size, seq_length)
-            min_frag_end = start + min_size
-            for region2 in nohom_regions:
-                if region2[1] <= start + min_size:
-                    continue
-                region2_start = max(region2[0], min_frag_end)
-                region2_end = min(region2[1], max_frag_end)
-                if region2_end <= region2_start:
-                    continue
-                if motif:
-                    ends = find_motif_positions(
-                        seq, (region2_start, region2_end), motif, is_start=False
-                    )
-                else:
-                    ends = list(range(region2_start, region2_end + 1))
-                for end in sorted(ends, reverse=True):
-                    frag_len = end - start
-                    if frag_len < min_size or frag_len > max_size:
-                        continue
-                    if end < seq_length:
-                        valid_overlap = False
-                        for overlap_region in nohom_regions:
-                            ostart = max(overlap_region[0], end - max_overlap)
-                            oend = min(overlap_region[1], end)
-                            for overlap_len in range(max_overlap, min_overlap - 1, -1):
-                                overlap_start = end - overlap_len
-                                overlap_end = end
-                                if overlap_start < ostart or overlap_end > oend:
-                                    continue
-                                if motif:
-                                    if (
-                                        str(
-                                            seq[
-                                                overlap_start : overlap_start
-                                                + len(motif)
-                                            ]
-                                        ).upper()
-                                        != motif.upper()
-                                    ):
-                                        continue
-                                valid_overlap = True
-                                return (
-                                    start,
-                                    end,
-                                    overlap_start,
-                                    overlap_end,
-                                    overlap_len,
-                                )
-                        if not valid_overlap:
-                            continue
-                    else:
-                        return start, end, None, None, None
-    return None
-
-
-def merge_fragments(fragments, max_size):
-    """
-    Greedily merges consecutive (possibly overlapping) fragments
-    as long as the merged fragment does not exceed max_size.
-    Preserves the overlap and note fields from the last fragment in the group.
-    """
-    if not fragments:
-        return []
-    merged = []
-    group_start = fragments[0][0]
-    group_end = fragments[0][1]
-    group_overlap_start = fragments[0][2]
-    group_overlap_end = fragments[0][3]
-    group_actual_overlap = fragments[0][4]
-    for frag in fragments[1:]:
-        (
-            next_start,
-            next_end,
-            next_overlap_start,
-            next_overlap_end,
-            next_actual_overlap,
-        ) = frag
-        # If merging would exceed max_size, finalize current group
-        if next_end - group_start > max_size:
-            merged.append(
-                (
-                    group_start,
-                    group_end,
-                    group_overlap_start,
-                    group_overlap_end,
-                    group_actual_overlap,
-                )
-            )
-            group_start = next_start
-            group_end = next_end
-            group_overlap_start = next_overlap_start
-            group_overlap_end = next_overlap_end
-            group_actual_overlap = next_actual_overlap
-        else:
-            # Merge: extend group_end and store latest overlap
-            group_end = next_end
-            group_overlap_start = next_overlap_start
-            group_overlap_end = next_overlap_end
-            group_actual_overlap = next_actual_overlap
-    # Append last group
-    merged.append(
-        (
-            group_start,
-            group_end,
-            group_overlap_start,
-            group_overlap_end,
-            group_actual_overlap,
-        )
-    )
-    return merged
 
 
 def annotate_fragments(record, fragments):
