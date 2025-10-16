@@ -1,14 +1,165 @@
-#!/usr/bin/env python3
-
-import argparse
+from dataclasses import dataclass
+from typing import Optional
 import re
 import networkx as nx
 from Bio import SeqIO
 from Bio.SeqFeature import SeqFeature, FeatureLocation
 from Bio.SeqRecord import SeqRecord
 
+@dataclass
+class FragmentConfig:
+    min_size: int
+    max_size: int
+    min_overlap: int
+    max_overlap: int
+    motif: Optional[str] = None
+    min_step: int = 10
 
-def extract_no_homology_regions(record: SeqRecord) -> list[tuple[int, int]]:
+    def __post_init__(self):
+        """Validate parameters."""
+        if self.min_size > self.max_size:
+            raise ValueError("min_size must be <= max_size")
+        if self.min_overlap > self.max_overlap:
+            raise ValueError("min_overlap must be <= max_overlap")
+        # TO DO: Add more checks
+class Fragmentor:
+    def __init__(self, seq: str, nohom_regions: tuple[int, int], config: FragmentConfig):
+        self.seq = seq.upper()
+        self.seq_len = len(seq)
+        self.config = config
+        self.nohom_regions = nohom_regions
+
+        print(f"Calculating possible overlaps...")
+        overlaps = self.get_possible_overlaps(self)
+        print(f"Constructing overlap graph...")
+        graph = self.construct_overlap_graph(self, overlaps)
+
+    def get_possible_overlaps(self):
+        if self.config.motif is None:
+            # for free overlaps, we don't care about max_overlap
+            # the smaller the overlap, the better
+            overlaps = self.get_possible_free_overlaps(self)
+        else:
+            overlaps = self.get_possible_motif_overlaps(self)
+
+        overlaps.sort(key=lambda x: x[0])
+        overlaps = list(dict.fromkeys(overlaps))
+        overlaps.insert(0, (0, 0))
+        overlaps.append((self.seq_len, self.seq_len))
+        return overlaps
+
+    def get_possible_free_overlaps(self)):
+        overlaps = []
+        for region in self.nohom_regions:
+            for pos in range(region[0] + self.min_overlap, region[1], self.min_step):
+                overlaps.append((pos - self.min_overlap, pos))
+        return overlaps
+
+    def get_possible_motif_overlaps(self):
+        overlaps = []
+        motif_len = len(self.motif)
+        for region in self.nohom_regions:
+            motif_positions = [m.start() for m in re.finditer(self.motif, self.seq, pos=region[0], endpos=region[1])]
+            for pos in motif_positions:
+                next_pos = next(
+                    (
+                        p
+                        for p in motif_positions
+                        if p - pos + motif_len - 1 >= self.min_overlap
+                        and p - pos + motif_len - 1 <= self.max_overlap
+                    ),
+                    None,
+                )
+                if next_pos is not None:
+                    overlaps.append((pos, next_pos))
+        return overlaps
+
+    def construct_overlap_graph(self, overlaps):
+        graph = nx.DiGraph()
+        for i in range(len(overlaps)):
+            too_far = False
+            j = i + 1
+            while not too_far and j < len(overlaps):
+                if overlaps[j][1] - overlaps[i][0] >= self.min_length:
+                    if overlaps[j][1] - overlaps[i][0] <= self.max_length:
+                        graph.add_edge(overlaps[i], overlaps[j], weight=1, constraints="all")
+                    else:
+                        too_far = True
+                j += 1
+        return graph
+    
+    def keep_homology_constraint(self, components):
+        extra_vertices = []
+        for i in range(len(components) - 1):
+            gap_start = max(components[i], key=lambda x: x[1])
+            gap_start[0] -= self.min_length
+            gap_start[0] = max(gap_start[0], 0)
+            gap_end = min(components[i+1], key=lambda x: x[0])
+            gap_end[1] += self.min_length
+            gap_end[1] = min(gap_end[1], self.seq_len)
+
+            for region in self.nohom_regions:
+                if region[0] < gap_end[1] and region[1] > gap_start[0]:
+                    start = max(gap_start[1], region[0])
+                    while start + self.min_overlap <= min(region[1], gap_end[0]):
+                        extra_vertices.append((start - self.min_overlap, start))
+                        start += self.min_step
+        self.add_extra_vertices(self, extra_vertices, 10, "homology")
+    
+    def add_extra_vertices(self, extra_vertices, weight, constraints):
+        for v in extra_vertices:
+            self.graph.add_node(v)
+            for u in self.graph.nodes:
+                if u[1] < v[0]:
+                    if v[1] - u[0] >= self.min_length and v[1] - u[0] <= self.max_length:
+                        self.graph.add_edge(u, v, weight=weight, constraints=constraints)
+                elif u[0] > v[1]:
+                    if u[1] - v[0] >= self.min_length and u[1] - v[0] <= self.max_length:
+                        self.graph.add_edge(v, u, weight=weight, constraints=constraints)
+
+    def keep_no_constraint(self, components):
+        extra_vertices = []
+        for i in range(len(components) - 1):
+            gap_start = max(components[i], key=lambda x: x[1])
+            gap_start[0] -= self.min_length
+            gap_start[0] = max(gap_start[0], 0)
+            gap_end = min(components[i+1], key=lambda x: x[0])
+            gap_end[1] += self.min_length
+            gap_end[1] = min(gap_end[1], self.seq_len)
+
+            start = gap_start[0]
+            while start + self.min_overlap <= gap_end[1]:
+                extra_vertices.append((start - self.min_overlap, start))
+                start += self.max_length
+
+        self.add_extra_vertices(self, extra_vertices, 100, "none")
+    
+    def fix_graph(self):
+        components = list(nx.weakly_connected_components(self.graph))
+        components.sort(key=lambda x: min(x, key=lambda y: y[0]))
+
+        print(f"""
+            The sequence can't be fully covered with the given constraints.
+            Attempting to fix the graph by relaxing constraints...
+            """)
+        
+        self.keep_homology_constraint(self, components)
+
+        fixed = self.graph.is_weakly_connected()
+        if not fixed:
+            print(""""Failed to fix the graph by keeping homology constraint. 
+                    The gap will be closed by unconstrained fragments.
+                """)
+            self.keep_no_constraint(self, self.graph.weakly_connected_components())
+        else:
+            print("Successfully fixed the graph by keeping homology constraint.")
+
+    def get_shortest_path(self):
+        if not nx.is_weakly_connected(self.graph):
+            graph = self.fix_graph()
+        return nx.shortest_path(graph, (0, 0), (self.seq_len, self.seq_len), weight="weight")
+
+def extract_no_homology_regions(self, record: SeqRecord) -> list[tuple[int, int]]:
     """
     Extracts no homology regions (as (start, end) tuples) from the GenBank feature annotations.
 
@@ -33,102 +184,6 @@ def extract_no_homology_regions(record: SeqRecord) -> list[tuple[int, int]]:
         else:
             merged[-1][1] = max(merged[-1][1], e)
     return [tuple(x) for x in merged]
-
-
-def get_possible_overlaps(seq_str, nohom_regions, min_overlap, max_overlap, min_step = 10, motif=None):
-    if motif is None:
-        # for free overlaps, we don't care about max_overlap
-        # the smaller the overlap, the better
-        overlaps = get_possible_free_overlaps(nohom_regions, min_overlap, min_step)
-    else:
-        overlaps = get_possible_motif_overlaps(nohom_regions, min_overlap, max_overlap, motif, seq_str)
-
-    overlaps.sort(key=lambda x: x[0])
-    overlaps = list(dict.fromkeys(overlaps))
-    overlaps.insert(0, (0, 0))
-    overlaps.append((len(seq_str), len(seq_str)))
-    return overlaps
-
-def get_possible_free_overlaps(nohom_regions, min_overlap, min_step=10):
-    overlaps = []
-    for region in nohom_regions:
-        for pos in range(region[0] + min_overlap, region[1], min_step):
-            overlaps.append((pos - min_overlap, pos))
-    return overlaps
-
-def get_possible_motif_overlaps(nohom_regions, min_overlap, max_overlap, motif, seq_str):
-    overlaps = []
-    motif_len = len(motif)
-    for region in nohom_regions:
-        motif_positions = [m.start() for m in re.finditer(motif, seq_str, pos=region[0], endpos=region[1])]
-        for pos in motif_positions:
-            next_pos = next(
-                (
-                    p
-                    for p in motif_positions
-                    if p - pos + motif_len - 1 >= min_overlap
-                    and p - pos + motif_len - 1 <= max_overlap
-                ),
-                None,
-            )
-            if next_pos is not None:
-                overlaps.append((pos, next_pos))
-    return overlaps
-
-def construct_overlap_graph(overlaps, min_length, max_length):
-    graph = nx.DiGraph()
-    for i in range(len(overlaps)):
-        too_far = False
-        j = i + 1
-        while not too_far and j < len(overlaps):
-            if overlaps[j][1] - overlaps[i][0] >= min_length:
-                if overlaps[j][1] - overlaps[i][0] <= max_length:
-                    graph.add_edge(overlaps[i], overlaps[j])
-                else:
-                    too_far = True
-            j += 1
-    return graph
-
-def fix_graph(graph, nohom_regions, min_length, max_length, min_overlap):
-    components = list(nx.weaksy_connected_components(graph))
-    comp_span = []
-    for comp in components:
-        min_node = min(comp, key=lambda x: x[0])
-        max_node = max(comp, key=lambda x: x[1])
-        comp_span.append((min_node, max_node))
-    comp_span.sort(key=lambda x: x[0])
-    for i in range(len(comp_span) - 1):
-        print(f"""Warning: Gap from position {comp_span[i][1][1]} to {comp_span[i+1][0][0]} 
-                cannot be covered by a valid fragment. Gap size: {comp_span[i+1][0][0] - comp_span[i][1][1]}.
-                Attempting to fix it by relaxing constraints...
-              """)
-        success = keep_homology_constraint(graph, (comp_span[i][1][1], comp_span[i+1][0][0]), nohom_regions)
-        if not success:
-            print(""""Failed to fix the graph by keeping homology constraint. 
-                    The gap will be closed by unconstrained fragments.
-                """)
-            keep_no_constraint(graph, (comp_span[i][1], comp_span[i+1][0]), min_length, max_length, min_overlap)
-        else:
-            print("Successfully fixed the graph by keeping homology constraint.")
-    return graph
-
-def keep_homology_constraint(graph, gap, nohom_regions):
-    return True
-
-def keep_no_constraint(graph, gap, min_length, max_length, min_overlap):
-    gap_start, gap_end = gap
-    graph.add_edge((gap_start, gap_start), (gap_end, gap_end))
-    return True
-
-def get_shortest_path(graph):
-    if not nx.weakly_connected(graph):
-        graph = fix_graph(graph)
-    return nx.shortest_path(graph, (0, 0), (len(seq), len(seq)))
-
-
-def region_contains(region, start, end):
-    rstart, rend = region
-    return start >= rstart and end <= rend
 
 
 def annotate_fragments(record, fragments):
