@@ -48,7 +48,7 @@ class Fragmentor:
         overlaps.append((self.seq_len, self.seq_len))
         return overlaps
 
-    def get_possible_free_overlaps(self)):
+    def get_possible_free_overlaps(self):
         overlaps = []
         for region in self.nohom_regions:
             for pos in range(region[0] + self.min_overlap, region[1], self.min_step):
@@ -159,7 +159,7 @@ class Fragmentor:
             graph = self.fix_graph()
         return nx.shortest_path(graph, (0, 0), (self.seq_len, self.seq_len), weight="weight")
 
-def extract_no_homology_regions(self, record: SeqRecord) -> list[tuple[int, int]]:
+def extract_no_homology_regions(record: SeqRecord) -> list[tuple[int, int]]:
     """
     Extracts no homology regions (as (start, end) tuples) from the GenBank feature annotations.
 
@@ -175,16 +175,8 @@ def extract_no_homology_regions(self, record: SeqRecord) -> list[tuple[int, int]
             start = int(feat.location.start)
             end = int(feat.location.end)
             nohom_regions.append((start, end))
-    # Sort and merge overlapping/adjacent regions for safety
     nohom_regions.sort()
-    merged = []
-    for s, e in nohom_regions:
-        if not merged or s > merged[-1][1]:
-            merged.append([s, e])
-        else:
-            merged[-1][1] = max(merged[-1][1], e)
-    return [tuple(x) for x in merged]
-
+    return nohom_regions
 
 def annotate_fragments(record, fragments):
     new_features = list(getattr(record, "features", []))
@@ -221,75 +213,71 @@ def annotate_fragments(record, fragments):
     return (record, frag_records)
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Fragment an annotated sequence around no homology regions with overlap and boundary constraints."
-    )
-    parser.add_argument(
-        "input",
-        help="Input GenBank file with no-homology annotated regions (from homology_finder.py)",
-    )
-    parser.add_argument(
-        "--min-size", type=int, required=True, help="Minimum fragment size (bp)"
-    )
-    parser.add_argument(
-        "--max-size", type=int, required=True, help="Maximum fragment size (bp)"
-    )
-    parser.add_argument(
-        "--min-overlap",
-        type=int,
-        required=True,
-        help="Minimum overlap between fragments (bp)",
-    )
-    parser.add_argument(
-        "--max-overlap",
-        type=int,
-        required=True,
-        help="Maximum overlap between fragments (bp)",
-    )
-    parser.add_argument(
-        "--boundary-motif",
-        type=str,
-        default=None,
-        help="Motif that must occur at fragment boundaries (start and end)",
-    )
-    parser.add_argument(
-        "-o", "--output", default="fragmented.gb", help="Output annotated GenBank"
-    )
-    parser.add_argument(
-        "-f",
-        "--fasta",
-        default="fragments.fasta",
-        help="Output multi-fasta file for fragments",
-    )
-    args = parser.parse_args()
+# def main():
+#     parser = argparse.ArgumentParser(
+#         description="Fragment an annotated sequence around no homology regions with overlap and boundary constraints."
+#     )
+#     parser.add_argument(
+#         "input",
+#         help="Input GenBank file with no-homology annotated regions (from homology_finder.py)",
+#     )
+#     parser.add_argument(
+#         "--min-size", type=int, required=True, help="Minimum fragment size (bp)"
+#     )
+#     parser.add_argument(
+#         "--max-size", type=int, required=True, help="Maximum fragment size (bp)"
+#     )
+#     parser.add_argument(
+#         "--min-overlap",
+#         type=int,
+#         required=True,
+#         help="Minimum overlap between fragments (bp)",
+#     )
+#     parser.add_argument(
+#         "--max-overlap",
+#         type=int,
+#         required=True,
+#         help="Maximum overlap between fragments (bp)",
+#     )
+#     parser.add_argument(
+#         "--boundary-motif",
+#         type=str,
+#         default=None,
+#         help="Motif that must occur at fragment boundaries (start and end)",
+#     )
+#     parser.add_argument(
+#         "-o", "--output", default="fragmented.gb", help="Output annotated GenBank"
+#     )
+#     parser.add_argument(
+#         "-f",
+#         "--fasta",
+#         default="fragments.fasta",
+#         help="Output multi-fasta file for fragments",
+#     )
+#     args = parser.parse_args()
 
-    input_record = SeqIO.read(args.input, "genbank")
-    nohom_regions = extract_no_homology_regions(input_record)
-    if not nohom_regions:
-        raise RuntimeError("No no-homology regions found in input annotation!")
+#     input_record = SeqIO.read(args.input, "genbank")
+#     nohom_regions = extract_no_homology_regions(input_record)
+#     if not nohom_regions:
+#         raise RuntimeError("No no-homology regions found in input annotation!")
 
-    # Step 1: Fragmentation
-    raw_fragments = fragment_sequence(
-        input_record.seq,
-        nohom_regions,
-        min_size=args.min_size,
-        max_size=args.max_size,
-        min_overlap=args.min_overlap,
-        max_overlap=args.max_overlap,
-        motif=args.boundary_motif,
-    )
-    # Step 2: Merge adjacent fragments where possible
-    merged_fragments = merge_fragments(raw_fragments, args.max_size)
+#     # Step 1: Fragmentation
+#     raw_fragments = fragment_sequence(
+#         input_record.seq,
+#         nohom_regions,
+#         min_size=args.min_size,
+#         max_size=args.max_size,
+#         min_overlap=args.min_overlap,
+#         max_overlap=args.max_overlap,
+#         motif=args.boundary_motif,
+#     )
+#     # Step 2: Merge adjacent fragments where possible
+#     merged_fragments = merge_fragments(raw_fragments, args.max_size)
 
-    (record, frag_records) = annotate_fragments(input_record, merged_fragments)
-    with open(args.output, "w") as gbo:
-        SeqIO.write(record, gbo, "genbank")
-    with open(args.fasta, "w") as fao:
-        SeqIO.write(frag_records, fao, "fasta")
+#     (record, frag_records) = annotate_fragments(input_record, merged_fragments)
+#     with open(args.output, "w") as gbo:
+#         SeqIO.write(record, gbo, "genbank")
+#     with open(args.fasta, "w") as fao:
+#         SeqIO.write(frag_records, fao, "fasta")
 
-    print(f"Wrote {len(merged_fragments)} fragments to {args.output} and {args.fasta}")
-
-
-if __name__ == "__main__":
-    main()
+#     print(f"Wrote {len(merged_fragments)} fragments to {args.output} and {args.fasta}")

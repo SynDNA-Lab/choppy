@@ -1,0 +1,90 @@
+LOCUS       single_region             16 bp    DNA              UNK 01-JAN-1980
+DEFINITION  Test sequence with a single non-homology region.
+ACCESSION   single_region
+VERSION     single_region
+KEYWORDS    .
+SOURCE      .
+  ORGANISM  .
+            .
+FEATURES             Location/Qualifiers
+     misc_feature    6..10
+                     /note="Non-homologous region 1"
+                     /label="homology_free"
+ORIGIN
+        1 atgcatgcat gcatgc
+//
+LOCUS       multiple_regions          28 bp    DNA              UNK 01-JAN-1980
+DEFINITION  Test sequence with multiple non-homology regions.
+ACCESSION   multiple_regions
+VERSION     multiple_regions
+KEYWORDS    .
+SOURCE      .
+  ORGANISM  .
+            .
+FEATURES             Location/Qualifiers
+     misc_feature    6..10
+                     /note="Non-homologous region 1"
+                     /label="homology_free"
+     misc_feature    16..20
+                     /note="Non-homologous region 2"
+                     /label="homology_free"
+     misc_feature    26..28
+                     /note="Non-homologous region 3"
+                     /label="homology_free"
+ORIGIN
+        1 atgcatgcat gcatgcatgc atgcatgc
+//
+LOCUS       no_regions                12 bp    DNA              UNK 01-JAN-1980
+DEFINITION  Test sequence with no homology_free regions.
+ACCESSION   no_regions
+VERSION     no_regions
+KEYWORDS    .
+SOURCE      .
+  ORGANISM  .
+            .
+FEATURES             Location/Qualifiers
+ORIGIN
+        1 atgcatgcat gc
+//
+LOCUS       unordered_regions         28 bp    DNA              UNK 01-JAN-1980
+DEFINITION  Test sequence with regions in wrong order (to test sorting).
+ACCESSION   unordered_regions
+VERSION     unordered_regions
+KEYWORDS    .
+SOURCE      .
+  ORGANISM  .
+            .
+FEATURES             Location/Qualifiers
+     misc_feature    21..25
+                     /note="Region 3"
+                     /label="homology_free"
+     misc_feature    6..10
+                     /note="Region 1"
+                     /label="homology_free"
+     misc_feature    13..18
+                     /note="Region 2"
+                     /label="homology_free"
+ORIGIN
+        1 atgcatgcat gcatgcatgc atgcatgc
+//
+LOCUS       mixed_features            28 bp    DNA              UNK 01-JAN-1980
+DEFINITION  Test sequence with mixed feature types (only homology_free should be extracted).
+ACCESSION   mixed_features
+VERSION     mixed_features
+KEYWORDS    .
+SOURCE      .
+  ORGANISM  .
+            .
+FEATURES             Location/Qualifiers
+     misc_feature    6..10
+                     /note="Region 1"
+                     /label="homology_free"
+     misc_feature    16..20
+                     /note="Some other region"
+                     /label="other"
+     CDS             23..27
+                     /note="Gene"
+                     /label="homology_free"
+ORIGIN
+        1 atgcatgcat gcatgcatgc atgcatgc
+//
