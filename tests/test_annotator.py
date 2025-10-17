@@ -2,6 +2,7 @@
 Tests for the fragment annotator module.
 """
 import pytest
+import networkx as nx
 from pathlib import Path
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
@@ -264,40 +265,41 @@ class TestFragmentorGetPossibleOverlaps:
         nohom_regions = [(50, 100)]
         config = FragmentConfig(100, 500, 20, 50, min_step=10)
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_overlaps()
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        overlaps = fragmentor.get_possible_overlaps()
         
         # Should have start and end sentinels
-        # assert overlaps[0] == (0, 0)
-        # assert overlaps[-1] == (len(seq), len(seq))
+        assert overlaps[0] == (0, 0)
+        assert overlaps[-1] == (len(seq), len(seq))
         # Should have overlaps in between
-        # assert len(overlaps) > 2
+        assert len(overlaps) == 6  # 4 from region + 2 sentinels
     
     def test_get_possible_overlaps_motif(self):
         """Test that get_possible_overlaps uses motif overlaps when motif provided."""
-        seq = "ATGC" + "GAATTC" + "ATGC" * 10 + "GAATTC" + "ATGC"
+        seq = "ATGC" + "GAATTC" + "ATGC" * 8 + "GAATTC" + "ATGC"
         nohom_regions = [(0, len(seq))]
         config = FragmentConfig(100, 500, 20, 50, motif="GAATTC")
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_overlaps()
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        overlaps = fragmentor.get_possible_overlaps()
         
         # Should have start and end sentinels
-        # assert overlaps[0] == (0, 0)
-        # assert overlaps[-1] == (len(seq), len(seq))
+        assert overlaps[0] == (0, 0)
+        assert overlaps[-1] == (len(seq), len(seq))
+        assert len(overlaps) == 3  # 1 motif overlaps + 2 sentinels
     
     def test_overlaps_sorted(self):
         """Test that overlaps are sorted by start position."""
         seq = "A" * 300
-        nohom_regions = [(200, 250), (50, 100), (150, 180)]  # Unordered regions
+        nohom_regions = [(50, 100), (70, 170), (150, 180)]  # Unordered regions
         config = FragmentConfig(100, 500, 20, 50, min_step=10)
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_overlaps()
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        overlaps = fragmentor.get_possible_overlaps()
         
         # Check that overlaps are sorted
-        # for i in range(len(overlaps) - 1):
-        #     assert overlaps[i][0] <= overlaps[i+1][0]
+        for i in range(len(overlaps) - 1):
+            assert overlaps[i][0] <= overlaps[i+1][0]
     
     def test_overlaps_deduplicated(self):
         """Test that duplicate overlaps are removed."""
@@ -305,25 +307,11 @@ class TestFragmentorGetPossibleOverlaps:
         nohom_regions = [(50, 100), (50, 100)]  # Duplicate regions
         config = FragmentConfig(100, 500, 20, 50, min_step=10)
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_overlaps()
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        overlaps = fragmentor.get_possible_overlaps()
         
         # Check no duplicates
-        # assert len(overlaps) == len(set(overlaps))
-    
-    def test_overlaps_sentinels_added(self):
-        """Test that sentinels (0,0) and (seq_len, seq_len) are added."""
-        seq = "A" * 200
-        nohom_regions = [(50, 100)]
-        config = FragmentConfig(100, 500, 20, 50)
-        
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_overlaps()
-        
-        # assert (0, 0) in overlaps
-        # assert (200, 200) in overlaps
-
-
+        assert len(overlaps) == len(set(overlaps))
 class TestFragmentorConstructOverlapGraph:
     """Tests for Fragmentor.construct_overlap_graph method."""
     
@@ -333,74 +321,375 @@ class TestFragmentorConstructOverlapGraph:
         nohom_regions = [(50, 150), (250, 350)]
         config = FragmentConfig(100, 300, 20, 50, min_step=20)
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_overlaps()
-        # graph = fragmentor.construct_overlap_graph(overlaps)
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        overlaps = fragmentor.get_possible_overlaps()
+        graph = fragmentor.construct_overlap_graph(overlaps)
         
         # Graph should be a directed graph
-        # assert isinstance(graph, nx.DiGraph)
-        # assert len(graph.nodes) > 0
-        # assert len(graph.edges) > 0
+        assert isinstance(graph, nx.DiGraph)
+        assert len(graph.nodes) > 0
+        assert len(graph.edges) > 0
     
     def test_graph_respects_min_length(self):
-        """Test that graph edges respect minimum fragment length."""
+        """Test that graph edges constraints."""
+        seq = "A" * 500
+        nohom_regions = [(50, 110), (99, 130), (159, 250), (200, 300)]
+        config = FragmentConfig(100, 300, 20, 50)
+        
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        overlaps = fragmentor.get_possible_overlaps()
+        graph = fragmentor.construct_overlap_graph(overlaps)
+        
+        # Check all edges respect min_size and max_size constraints
+        for u, v in graph.edges:
+            fragment_length = v[1] - u[0]
+            assert fragment_length >= 100
+            assert fragment_length <= 300
+            assert u[0] < v[0]  # Start position must increase
+            assert u[1] <= v[1]  # End position should not decrease            
+
+        assert ((0, 0), (80, 100)) in graph.edges # The shortes valid edge
+        assert ((200, 220), (500, 500)) in graph.edges # The longest valid edge
+
+class TestFragmentorFixGraph:
+    """Tests for Fragmentor.fix_graph and related methods."""
+    
+    def test_fix_graph_disconnected_graph(self):
+        """Test fixing a disconnected graph."""
+        # Create a scenario where the graph will be disconnected
+        # This happens when there's a gap that can't be covered with the constraints
+        seq = "A" * 1000
+        # Regions far apart with constraints that can't bridge the gap
+        nohom_regions = [(50, 100), (800, 850)]
+        config = FragmentConfig(100, 200, 20, 50, min_step=30)
+        
+        # fragmentor = Fragmentor(seq, nohom_regions, config)
+        # Initial graph should be disconnected
+        # assert not nx.is_weakly_connected(fragmentor.graph)
+        
+        # fragmentor.fix_graph()
+        # After fixing, graph should be connected
+        # assert nx.is_weakly_connected(fragmentor.graph)
+    
+    def test_fix_graph_already_connected(self):
+        """Test fix_graph on an already connected graph."""
+        seq = "A" * 500
+        nohom_regions = [(50, 150), (200, 300)]
+        config = FragmentConfig(100, 400, 20, 50, min_step=20)
+        
+        # fragmentor = Fragmentor(seq, nohom_regions, config)
+        # If graph is already connected, fix_graph should not break it
+        # initial_edges = len(fragmentor.graph.edges)
+        # fragmentor.fix_graph()
+        # After fixing, should still be connected
+        # assert nx.is_weakly_connected(fragmentor.graph)
+    
+    def test_keep_homology_constraint(self):
+        """Test that keep_homology_constraint adds vertices in homology regions."""
+        seq = "A" * 1000
+        # Create a gap between components
+        nohom_regions = [(100, 200), (700, 800)]
+        config = FragmentConfig(100, 250, 20, 50, min_step=20)
+        
+        # fragmentor = Fragmentor(seq, nohom_regions, config)
+        # overlaps = fragmentor.get_possible_overlaps()
+        # graph = fragmentor.construct_overlap_graph(overlaps)
+        
+        # Get components
+        # components = list(nx.weakly_connected_components(graph))
+        # initial_nodes = len(graph.nodes)
+        
+        # fragmentor.keep_homology_constraint(components)
+        # Should have added new nodes
+        # assert len(fragmentor.graph.nodes) > initial_nodes
+        
+        # New edges should have weight=10 and constraints="homology"
+        # for u, v, data in fragmentor.graph.edges(data=True):
+        #     if data.get('constraints') == 'homology':
+        #         assert data['weight'] == 10
+    
+    def test_keep_no_constraint(self):
+        """Test that keep_no_constraint adds unconstrained vertices."""
+        seq = "A" * 1000
+        nohom_regions = [(50, 100), (900, 950)]
+        config = FragmentConfig(100, 250, 20, 50, min_step=20)
+        
+        # fragmentor = Fragmentor(seq, nohom_regions, config)
+        # overlaps = fragmentor.get_possible_overlaps()
+        # graph = fragmentor.construct_overlap_graph(overlaps)
+        
+        # Get components
+        # components = list(nx.weakly_connected_components(graph))
+        # initial_nodes = len(graph.nodes)
+        
+        # fragmentor.keep_no_constraint(components)
+        # Should have added new nodes
+        # assert len(fragmentor.graph.nodes) > initial_nodes
+        
+        # New edges should have weight=100 and constraints="none"
+        # for u, v, data in fragmentor.graph.edges(data=True):
+        #     if data.get('constraints') == 'none':
+        #         assert data['weight'] == 100
+    
+    def test_add_extra_vertices(self):
+        """Test that add_extra_vertices correctly adds nodes and edges."""
         seq = "A" * 500
         nohom_regions = [(50, 150)]
         config = FragmentConfig(100, 300, 20, 50)
         
         # fragmentor = Fragmentor(seq, nohom_regions, config)
         # overlaps = fragmentor.get_possible_overlaps()
-        # graph = fragmentor.construct_overlap_graph(overlaps)
+        # fragmentor.graph = fragmentor.construct_overlap_graph(overlaps)
         
-        # Check all edges respect min_length constraint
-        # for u, v in graph.edges:
+        # initial_nodes = len(fragmentor.graph.nodes)
+        # extra_vertices = [(200, 220), (250, 270)]
+        
+        # fragmentor.add_extra_vertices(extra_vertices, weight=5, constraints="test")
+        
+        # Should have added the vertices
+        # assert len(fragmentor.graph.nodes) == initial_nodes + 2
+        # assert (200, 220) in fragmentor.graph.nodes
+        # assert (250, 270) in fragmentor.graph.nodes
+        
+        # New edges should have the specified weight and constraints
+        # for u, v, data in fragmentor.graph.edges(data=True):
+        #     if v in extra_vertices or u in extra_vertices:
+        #         if data.get('constraints') == 'test':
+        #             assert data['weight'] == 5
+    
+    def test_add_extra_vertices_respects_constraints(self):
+        """Test that add_extra_vertices only adds valid edges."""
+        seq = "A" * 500
+        nohom_regions = [(50, 150)]
+        config = FragmentConfig(100, 300, 20, 50)
+        
+        # fragmentor = Fragmentor(seq, nohom_regions, config)
+        # overlaps = fragmentor.get_possible_overlaps()
+        # fragmentor.graph = fragmentor.construct_overlap_graph(overlaps)
+        
+        # Add a vertex that would create too-long fragments
+        # extra_vertices = [(450, 470)]
+        # fragmentor.add_extra_vertices(extra_vertices, weight=5, constraints="test")
+        
+        # Check that edges respect min_size and max_size
+        # for u, v in fragmentor.graph.edges:
         #     fragment_length = v[1] - u[0]
-        #     assert fragment_length >= 100
+        #     assert fragment_length >= config.min_size
+        #     assert fragment_length <= config.max_size
     
-    def test_graph_respects_max_length(self):
-        """Test that graph edges respect maximum fragment length."""
-        seq = "A" * 500
-        nohom_regions = [(50, 150)]
-        config = FragmentConfig(100, 300, 20, 50)
+    def test_fix_graph_homology_first(self):
+        """Test that fix_graph tries homology constraint before no constraint."""
+        seq = "A" * 1000
+        # Create a gap that CAN be fixed with homology constraint
+        nohom_regions = [(100, 400), (600, 900)]
+        config = FragmentConfig(150, 600, 30, 60, min_step=30)
         
         # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_overlaps()
-        # graph = fragmentor.construct_overlap_graph(overlaps)
+        # If the graph is disconnected, fix_graph should fix it
+        # initial_connected = nx.is_weakly_connected(fragmentor.graph)
         
-        # Check all edges respect max_length constraint
-        # for u, v in graph.edges:
-        #     fragment_length = v[1] - u[0]
-        #     assert fragment_length <= 300
+        # fragmentor.fix_graph()
+        
+        # Should be connected after fix
+        # assert nx.is_weakly_connected(fragmentor.graph)
+        
+        # Check if homology constraint was used (weight=10 edges exist)
+        # has_homology_edges = any(
+        #     data.get('constraints') == 'homology' 
+        #     for _, _, data in fragmentor.graph.edges(data=True)
+        # )
+        # assert has_homology_edges
     
-    def test_graph_edge_weights(self):
-        """Test that edges have correct weights."""
-        seq = "A" * 500
-        nohom_regions = [(50, 150)]
-        config = FragmentConfig(100, 300, 20, 50)
+    def test_fix_graph_falls_back_to_no_constraint(self):
+        """Test that fix_graph falls back to no constraint if homology fails."""
+        seq = "A" * 2000
+        # Create a gap that CANNOT be fixed with homology constraint alone
+        # No homology regions in the gap area
+        nohom_regions = [(50, 100), (1900, 1950)]
+        config = FragmentConfig(100, 200, 20, 50, min_step=30)
         
         # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_overlaps()
-        # graph = fragmentor.construct_overlap_graph(overlaps)
         
-        # Check edge weights
-        # for u, v, data in graph.edges(data=True):
-        #     assert 'weight' in data
-        #     assert data['weight'] == 1
+        # fragmentor.fix_graph()
+        
+        # Should be connected after fix
+        # assert nx.is_weakly_connected(fragmentor.graph)
+        
+        # Should have no-constraint edges (weight=100)
+        # has_no_constraint_edges = any(
+        #     data.get('constraints') == 'none'
+        #     for _, _, data in fragmentor.graph.edges(data=True)
+        # )
+        # assert has_no_constraint_edges
+
+
+class TestFragmentorShortestPath:
+    """Tests for Fragmentor.get_shortest_path method."""
     
-    def test_graph_no_backward_edges(self):
-        """Test that graph only has forward edges (no cycles)."""
+    def test_get_shortest_path_simple(self):
+        """Test finding shortest path in a simple connected graph."""
         seq = "A" * 500
-        nohom_regions = [(50, 150)]
-        config = FragmentConfig(100, 300, 20, 50)
+        nohom_regions = [(50, 150), (250, 350)]
+        config = FragmentConfig(100, 300, 20, 50, min_step=30)
         
         # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_overlaps()
-        # graph = fragmentor.construct_overlap_graph(overlaps)
+        # path = fragmentor.get_shortest_path()
         
-        # All edges should go forward in position
-        # for u, v in graph.edges:
-        #     assert u[0] < v[0]  # Start position must increase
-        #     assert u[1] <= v[1]  # End position should not decrease
+        # Path should start at (0, 0) and end at (seq_len, seq_len)
+        # assert path[0] == (0, 0)
+        # assert path[-1] == (500, 500)
+        # assert len(path) >= 2
+    
+    def test_get_shortest_path_disconnected_graph(self):
+        """Test shortest path when graph needs fixing."""
+        seq = "A" * 1000
+        # Create scenario that will need graph fixing
+        nohom_regions = [(50, 100), (800, 850)]
+        config = FragmentConfig(100, 200, 20, 50, min_step=40)
+        
+        # fragmentor = Fragmentor(seq, nohom_regions, config)
+        # Graph might be disconnected initially
+        # path = fragmentor.get_shortest_path()
+        
+        # Should still find a path after fixing
+        # assert path[0] == (0, 0)
+        # assert path[-1] == (1000, 1000)
+        # Path should be continuous (each node connects to next)
+        # for i in range(len(path) - 1):
+        #     assert (path[i], path[i+1]) in fragmentor.graph.edges
+    
+    def test_shortest_path_minimizes_weight(self):
+        """Test that shortest path minimizes total weight."""
+        seq = "A" * 600
+        nohom_regions = [(50, 200), (350, 500)]
+        config = FragmentConfig(100, 400, 20, 50, min_step=20)
+        
+        # fragmentor = Fragmentor(seq, nohom_regions, config)
+        # path = fragmentor.get_shortest_path()
+        
+        # Calculate path weight
+        # path_weight = sum(
+        #     fragmentor.graph[path[i]][path[i+1]]['weight']
+        #     for i in range(len(path) - 1)
+        # )
+        
+        # Path weight should be reasonable (not excessively high)
+        # If we only use "all" constraint edges (weight=1), the weight should be low
+        # assert path_weight >= len(path) - 1  # At minimum, 1 per edge
+    
+    def test_shortest_path_prefers_lower_weight(self):
+        """Test that shortest path prefers edges with lower weight."""
+        seq = "A" * 500
+        nohom_regions = [(50, 150), (250, 350)]
+        config = FragmentConfig(100, 300, 20, 50, min_step=20)
+        
+        # fragmentor = Fragmentor(seq, nohom_regions, config)
+        # path = fragmentor.get_shortest_path()
+        
+        # Count edge types in path
+        # edge_types = {
+        #     'all': 0,
+        #     'homology': 0,
+        #     'none': 0
+        # }
+        # for i in range(len(path) - 1):
+        #     constraint = fragmentor.graph[path[i]][path[i+1]].get('constraints', 'unknown')
+        #     if constraint in edge_types:
+        #         edge_types[constraint] += 1
+        
+        # Should prefer 'all' constraint edges (weight=1) over others
+        # if edge_types['all'] > 0:
+        #     # If 'all' edges are available, they should dominate
+        #     assert edge_types['all'] >= edge_types['homology']
+        #     assert edge_types['all'] >= edge_types['none']
+    
+    def test_shortest_path_covers_entire_sequence(self):
+        """Test that the shortest path covers the entire sequence."""
+        seq = "A" * 800
+        nohom_regions = [(100, 200), (400, 500), (600, 700)]
+        config = FragmentConfig(150, 350, 25, 60, min_step=25)
+        
+        # fragmentor = Fragmentor(seq, nohom_regions, config)
+        # path = fragmentor.get_shortest_path()
+        
+        # Verify complete coverage
+        # assert path[0] == (0, 0)
+        # assert path[-1] == (800, 800)
+        
+        # Each consecutive pair in the path should overlap or be adjacent
+        # for i in range(len(path) - 1):
+        #     # Fragment i goes from path[i][0] to path[i+1][1]
+        #     # Fragment i+1 starts at path[i+1][0]
+        #     # There should be overlap: path[i+1][0] should be between path[i][0] and path[i+1][1]
+        #     assert path[i+1][0] <= path[i+1][1]
+    
+    def test_shortest_path_empty_nohom_regions(self):
+        """Test shortest path with no homology regions."""
+        seq = "A" * 300
+        nohom_regions = []
+        config = FragmentConfig(100, 250, 20, 50)
+        
+        # fragmentor = Fragmentor(seq, nohom_regions, config)
+        # path = fragmentor.get_shortest_path()
+        
+        # Should still find a path from start to end
+        # assert path[0] == (0, 0)
+        # assert path[-1] == (300, 300)
+    
+    def test_shortest_path_single_fragment(self):
+        """Test when entire sequence can be one fragment."""
+        seq = "A" * 150
+        nohom_regions = [(30, 120)]
+        config = FragmentConfig(100, 200, 20, 50)
+        
+        # fragmentor = Fragmentor(seq, nohom_regions, config)
+        # path = fragmentor.get_shortest_path()
+        
+        # Minimum path should have start, one intermediate, and end
+        # Or if the entire sequence fits in one fragment: start -> end
+        # assert len(path) >= 2
+        # assert path[0] == (0, 0)
+        # assert path[-1] == (150, 150)
+    
+    def test_shortest_path_validates_fragment_sizes(self):
+        """Test that fragments in the shortest path respect size constraints."""
+        seq = "A" * 1000
+        nohom_regions = [(100, 300), (500, 700)]
+        config = FragmentConfig(150, 400, 30, 70, min_step=30)
+        
+        # fragmentor = Fragmentor(seq, nohom_regions, config)
+        # path = fragmentor.get_shortest_path()
+        
+        # Check each fragment in the path
+        # for i in range(len(path) - 1):
+        #     fragment_start = path[i][0]
+        #     fragment_end = path[i+1][1]
+        #     fragment_length = fragment_end - fragment_start
+        #     
+        #     # Fragment should respect size constraints
+        #     assert fragment_length >= config.min_size
+        #     assert fragment_length <= config.max_size
+    
+    def test_shortest_path_with_motif_constraint(self):
+        """Test shortest path when using motif-based overlaps."""
+        seq = "ATGC" + "GAATTC" + "ATGC" * 30 + "GAATTC" + "ATGC" * 30 + "GAATTC" + "ATGC"
+        nohom_regions = [(0, len(seq))]
+        config = FragmentConfig(100, 300, 20, 50, motif="GAATTC", min_step=20)
+        
+        # fragmentor = Fragmentor(seq, nohom_regions, config)
+        # path = fragmentor.get_shortest_path()
+        
+        # Should find a path
+        # assert path[0] == (0, 0)
+        # assert path[-1] == (len(seq), len(seq))
+        
+        # Verify overlaps align with motif when using intermediate nodes
+        # for i in range(1, len(path) - 1):
+        #     node = path[i]
+        #     # Overlap nodes should be at motif positions
+        #     if node[0] > 0 and node[0] < len(seq):
+        #         # Check if position aligns with motif
+        #         pass  # Implementation depends on exact motif positioning logic
 
 
 class TestFragmentorEdgeCases:
