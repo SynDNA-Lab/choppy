@@ -363,13 +363,20 @@ class TestFragmentorFixGraph:
         nohom_regions = [(50, 100), (800, 850)]
         config = FragmentConfig(100, 200, 20, 50, min_step=30)
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
+        fragmentor = Fragmentor(seq, nohom_regions, config)
         # Initial graph should be disconnected
-        # assert not nx.is_weakly_connected(fragmentor.graph)
+        assert not nx.is_weakly_connected(fragmentor.graph)
         
-        # fragmentor.fix_graph()
+        fragmentor.fix_graph()
         # After fixing, graph should be connected
-        # assert nx.is_weakly_connected(fragmentor.graph)
+        assert nx.is_weakly_connected(fragmentor.graph)
+        # New edges also respect size constraints
+        for u, v in fragmentor.graph.edges:
+            fragment_length = v[1] - u[0]
+            assert fragment_length >= 100
+            assert fragment_length <= 300
+            assert u[0] < v[0]  # Start position must increase
+            assert u[1] <= v[1]  # End position should not decrease
     
     def test_fix_graph_already_connected(self):
         """Test fix_graph on an already connected graph."""
@@ -377,60 +384,85 @@ class TestFragmentorFixGraph:
         nohom_regions = [(50, 150), (200, 300)]
         config = FragmentConfig(100, 400, 20, 50, min_step=20)
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # If graph is already connected, fix_graph should not break it
-        # initial_edges = len(fragmentor.graph.edges)
-        # fragmentor.fix_graph()
-        # After fixing, should still be connected
-        # assert nx.is_weakly_connected(fragmentor.graph)
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        # If graph is already connected, fix_graph should not add any edges
+        initial_edges = len(fragmentor.graph.edges)
+        fragmentor.fix_graph()
+        assert nx.is_weakly_connected(fragmentor.graph)
+        assert len(fragmentor.graph.edges) == initial_edges
     
     def test_keep_homology_constraint(self):
         """Test that keep_homology_constraint adds vertices in homology regions."""
-        seq = "A" * 1000
-        # Create a gap between components
-        nohom_regions = [(100, 200), (700, 800)]
-        config = FragmentConfig(100, 250, 20, 50, min_step=20)
+        seq = "A" * 100 + "GAATTC" + "A" * 20 + "GAATTC" + "A" * 400 + "GAATTC" + "A" * 20 + "GAATTC" + "A" * 100
+        # Middle non-homology region has no boundary motifs and can't be bridged
+        nohom_regions = [(90, 150), (200, 400), (500, len(seq))]
+        config = FragmentConfig(100, 250, 20, 50, min_step=20, motif="GAATTC")
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_overlaps()
-        # graph = fragmentor.construct_overlap_graph(overlaps)
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        initial_nodes = list(fragmentor.graph.nodes)
         
-        # Get components
-        # components = list(nx.weakly_connected_components(graph))
-        # initial_nodes = len(graph.nodes)
-        
-        # fragmentor.keep_homology_constraint(components)
-        # Should have added new nodes
-        # assert len(fragmentor.graph.nodes) > initial_nodes
-        
-        # New edges should have weight=10 and constraints="homology"
-        # for u, v, data in fragmentor.graph.edges(data=True):
-        #     if data.get('constraints') == 'homology':
-        #         assert data['weight'] == 10
-    
+        fragmentor.fix_graph()
+
+        assert nx.is_weakly_connected(fragmentor.graph)
+        # Some nodes are added
+        new_nodes = set(list(fragmentor.graph.nodes)) - set(initial_nodes)
+        assert len(new_nodes) > 0
+        # All new nodes are within no-homology regions
+        for node in new_nodes:
+            print(node)
+            in_nohomology = False
+            for region in fragmentor.nohom_regions:
+                if node[0] >= region[0] and node[1] <= region[1]:
+                    in_nohomology = True
+                    break
+            assert in_nohomology
+
+        # New nodes are at least min_overlap long
+        for node in new_nodes:
+            assert (node[1] - node[0]) >= fragmentor.config.min_overlap
+
+        # All new edges should have weight=10 and constraints="homology"
+        for u, v, data in fragmentor.graph.edges(data=True):
+            if u in new_nodes or v in new_nodes:
+                assert data.get('constraints') == 'homology'
+                assert data['weight'] == 10
+
+        # New edges also respect size constraints
+        for u, v in fragmentor.graph.edges:
+            fragment_length = v[1] - u[0]
+            assert fragment_length >= 100
+            assert fragment_length <= 300
+            assert u[0] < v[0]  # Start position must increase
+            assert u[1] <= v[1]  # End position should not decrease
+            
     def test_keep_no_constraint(self):
         """Test that keep_no_constraint adds unconstrained vertices."""
         seq = "A" * 1000
         nohom_regions = [(50, 100), (900, 950)]
         config = FragmentConfig(100, 250, 20, 50, min_step=20)
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_overlaps()
-        # graph = fragmentor.construct_overlap_graph(overlaps)
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        initial_nodes = list(fragmentor.graph.nodes)
         
-        # Get components
-        # components = list(nx.weakly_connected_components(graph))
-        # initial_nodes = len(graph.nodes)
-        
-        # fragmentor.keep_no_constraint(components)
-        # Should have added new nodes
-        # assert len(fragmentor.graph.nodes) > initial_nodes
-        
-        # New edges should have weight=100 and constraints="none"
-        # for u, v, data in fragmentor.graph.edges(data=True):
-        #     if data.get('constraints') == 'none':
-        #         assert data['weight'] == 100
-    
+        assert not nx.is_weakly_connected(fragmentor.graph)
+        fragmentor.fix_graph()
+
+        assert nx.is_weakly_connected(fragmentor.graph)
+        # Some nodes are added
+        new_nodes = set(list(fragmentor.graph.nodes)) - set(initial_nodes)
+        assert len(new_nodes) > 0
+        # All new nodes are within no-homology regions
+
+        # New nodes are at least min_overlap long
+        for node in new_nodes:
+            assert (node[1] - node[0]) >= fragmentor.config.min_overlap
+
+        # All new edges should have weight=100 and constraints="none"
+        for u, v, data in fragmentor.graph.edges(data=True):
+            if u in new_nodes or v in new_nodes:
+                assert data.get('constraints') == 'none'
+                assert data['weight'] == 100
+
     def test_add_extra_vertices(self):
         """Test that add_extra_vertices correctly adds nodes and edges."""
         seq = "A" * 500

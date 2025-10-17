@@ -33,7 +33,7 @@ class Fragmentor:
         print(f"Calculating possible overlaps...")
         overlaps = self.get_possible_overlaps()
         print(f"Constructing overlap graph...")
-        graph = self.construct_overlap_graph(overlaps)
+        self.graph = self.construct_overlap_graph(overlaps)
 
     def get_possible_overlaps(self) -> list[tuple[int, int]]:
         """
@@ -86,7 +86,17 @@ class Fragmentor:
         return overlaps
 
     def construct_overlap_graph(self, overlaps):
+        """
+        Intial graph construction. Assumes that the provided overlaps are sorted and
+        connects them based on min and max fragment size constraints.
+        
+        Returns:
+            nx.DiGraph: Directed graph of overlaps as nodes and valid fragment connections as edges.
+        """
         graph = nx.DiGraph()
+        graph.add_node((0, 0))
+        graph.add_node((self.seq_len, self.seq_len))
+
         for i in range(len(overlaps)):
             too_far = False
             j = i + 1
@@ -97,25 +107,26 @@ class Fragmentor:
                     else:
                         too_far = True
                 j += 1
+        
         return graph
     
     def keep_homology_constraint(self, components):
         extra_vertices = []
         for i in range(len(components) - 1):
-            gap_start = max(components[i], key=lambda x: x[1])
-            gap_start[0] -= self.config.min_size
-            gap_start[0] = max(gap_start[0], 0)
-            gap_end = min(components[i+1], key=lambda x: x[0])
-            gap_end[1] += self.config.min_size
-            gap_end[1] = min(gap_end[1], self.seq_len)
+            gap_start_overlap = max(components[i], key=lambda x: x[1])
+            print(gap_start_overlap)
+            gap_start = max(gap_start_overlap[0] - self.config.min_size, 0)
+            gap_end_overlap = min(components[i+1], key=lambda x: x[0])
+            print(gap_end_overlap)
+            gap_end = min(gap_end_overlap[1] + self.config.min_size, self.seq_len)
 
             for region in self.nohom_regions:
-                if region[0] < gap_end[1] and region[1] > gap_start[0]:
-                    start = max(gap_start[1], region[0])
-                    while start + self.config.min_overlap <= min(region[1], gap_end[0]):
-                        extra_vertices.append((start - self.config.min_overlap, start))
-                        start += self.min_step
-        self.add_extra_vertices(self, extra_vertices, 10, "homology")
+                if region[0] < gap_end and region[1] > gap_start:
+                    start = max(gap_start, region[0])
+                    while start + self.config.min_overlap <= min(region[1], gap_end):
+                        extra_vertices.append((start, start + self.config.min_overlap))
+                        start += self.config.min_step
+        self.add_extra_vertices(extra_vertices, 10, "homology")
     
     def add_extra_vertices(self, extra_vertices, weight, constraints):
         for v in extra_vertices:
@@ -131,19 +142,17 @@ class Fragmentor:
     def keep_no_constraint(self, components):
         extra_vertices = []
         for i in range(len(components) - 1):
-            gap_start = max(components[i], key=lambda x: x[1])
-            gap_start[0] -= self.config.min_size
-            gap_start[0] = max(gap_start[0], 0)
-            gap_end = min(components[i+1], key=lambda x: x[0])
-            gap_end[1] += self.config.min_size
-            gap_end[1] = min(gap_end[1], self.seq_len)
+            gap_start_overlap = max(components[i], key=lambda x: x[1])
+            gap_start = max(gap_start_overlap[0] - self.config.min_size, 0)
+            gap_end_overlap = min(components[i+1], key=lambda x: x[0])
+            gap_end = min(gap_end_overlap[1] + self.config.min_size, self.seq_len)
 
-            start = gap_start[0]
-            while start + self.config.min_overlap <= gap_end[1]:
-                extra_vertices.append((start - self.config.min_overlap, start))
-                start += self.config.max_size
+            start = gap_start
+            while start + self.config.min_overlap <= gap_end:
+                extra_vertices.append((start, start + self.config.min_overlap))
+                start += self.config.max_size - self.config.min_overlap
 
-        self.add_extra_vertices(self, extra_vertices, 100, "none")
+        self.add_extra_vertices(extra_vertices, 100, "none")
     
     def fix_graph(self):
         components = list(nx.weakly_connected_components(self.graph))
@@ -153,15 +162,15 @@ class Fragmentor:
             The sequence can't be fully covered with the given constraints.
             Attempting to fix the graph by relaxing constraints...
             """)
-        
-        self.keep_homology_constraint(self, components)
+        if self.config.motif is not None:
+            self.keep_homology_constraint(components)
 
-        fixed = self.graph.is_weakly_connected()
+        fixed = nx.is_weakly_connected(self.graph)
         if not fixed:
             print(""""Failed to fix the graph by keeping homology constraint. 
                     The gap will be closed by unconstrained fragments.
                 """)
-            self.keep_no_constraint(self, self.graph.weakly_connected_components())
+            self.keep_no_constraint(list(nx.weakly_connected_components(self.graph)))
         else:
             print("Successfully fixed the graph by keeping homology constraint.")
 
@@ -169,6 +178,8 @@ class Fragmentor:
         if not nx.is_weakly_connected(self.graph):
             graph = self.fix_graph()
         return nx.shortest_path(graph, (0, 0), (self.seq_len, self.seq_len), weight="weight")
+
+# end of Fragmentor class
 
 def extract_no_homology_regions(record: SeqRecord) -> list[tuple[int, int]]:
     """
