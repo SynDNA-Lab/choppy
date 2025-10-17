@@ -443,7 +443,7 @@ class TestFragmentorFixGraph:
         
         fragmentor = Fragmentor(seq, nohom_regions, config)
         initial_nodes = list(fragmentor.graph.nodes)
-        
+
         assert not nx.is_weakly_connected(fragmentor.graph)
         fragmentor.fix_graph()
 
@@ -469,25 +469,25 @@ class TestFragmentorFixGraph:
         nohom_regions = [(50, 150)]
         config = FragmentConfig(100, 300, 20, 50)
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_overlaps()
-        # fragmentor.graph = fragmentor.construct_overlap_graph(overlaps)
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        overlaps = fragmentor.get_possible_overlaps()
+        fragmentor.graph = fragmentor.construct_overlap_graph(overlaps)
         
-        # initial_nodes = len(fragmentor.graph.nodes)
-        # extra_vertices = [(200, 220), (250, 270)]
+        initial_nodes = len(fragmentor.graph.nodes)
+        extra_vertices = [(200, 220), (250, 270)]
         
-        # fragmentor.add_extra_vertices(extra_vertices, weight=5, constraints="test")
+        fragmentor.add_extra_vertices(extra_vertices, weight=5, constraints="test")
         
         # Should have added the vertices
-        # assert len(fragmentor.graph.nodes) == initial_nodes + 2
-        # assert (200, 220) in fragmentor.graph.nodes
-        # assert (250, 270) in fragmentor.graph.nodes
+        assert len(fragmentor.graph.nodes) == initial_nodes + 2
+        assert (200, 220) in fragmentor.graph.nodes
+        assert (250, 270) in fragmentor.graph.nodes
         
-        # New edges should have the specified weight and constraints
-        # for u, v, data in fragmentor.graph.edges(data=True):
-        #     if v in extra_vertices or u in extra_vertices:
-        #         if data.get('constraints') == 'test':
-        #             assert data['weight'] == 5
+        #New edges should have the specified weight and constraints
+        for u, v, data in fragmentor.graph.edges(data=True):
+            if v in extra_vertices or u in extra_vertices:
+                if data.get('constraints') == 'test':
+                    assert data['weight'] == 5
     
     def test_add_extra_vertices_respects_constraints(self):
         """Test that add_extra_vertices only adds valid edges."""
@@ -495,64 +495,41 @@ class TestFragmentorFixGraph:
         nohom_regions = [(50, 150)]
         config = FragmentConfig(100, 300, 20, 50)
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_overlaps()
-        # fragmentor.graph = fragmentor.construct_overlap_graph(overlaps)
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        overlaps = fragmentor.get_possible_overlaps()
+        fragmentor.graph = fragmentor.construct_overlap_graph(overlaps)
         
-        # Add a vertex that would create too-long fragments
-        # extra_vertices = [(450, 470)]
-        # fragmentor.add_extra_vertices(extra_vertices, weight=5, constraints="test")
+        # Add a vertex that would create too-long and too-short fragments
+        extra_vertices = [(80, 100), (450, 470)]
+        fragmentor.add_extra_vertices(extra_vertices, weight=5, constraints="test")
         
         # Check that edges respect min_size and max_size
-        # for u, v in fragmentor.graph.edges:
-        #     fragment_length = v[1] - u[0]
-        #     assert fragment_length >= config.min_size
-        #     assert fragment_length <= config.max_size
-    
-    def test_fix_graph_homology_first(self):
-        """Test that fix_graph tries homology constraint before no constraint."""
-        seq = "A" * 1000
-        # Create a gap that CAN be fixed with homology constraint
-        nohom_regions = [(100, 400), (600, 900)]
-        config = FragmentConfig(150, 600, 30, 60, min_step=30)
-        
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # If the graph is disconnected, fix_graph should fix it
-        # initial_connected = nx.is_weakly_connected(fragmentor.graph)
-        
-        # fragmentor.fix_graph()
-        
-        # Should be connected after fix
-        # assert nx.is_weakly_connected(fragmentor.graph)
-        
-        # Check if homology constraint was used (weight=10 edges exist)
-        # has_homology_edges = any(
-        #     data.get('constraints') == 'homology' 
-        #     for _, _, data in fragmentor.graph.edges(data=True)
-        # )
-        # assert has_homology_edges
+        for u, v in fragmentor.graph.edges:
+            fragment_length = v[1] - u[0]
+            assert fragment_length >= config.min_size
+            assert fragment_length <= config.max_size
+            assert u[0] < v[0]  # Start position must increase
+            assert u[1] <= v[1]  # End position should not decrease
     
     def test_fix_graph_falls_back_to_no_constraint(self):
         """Test that fix_graph falls back to no constraint if homology fails."""
-        seq = "A" * 2000
-        # Create a gap that CANNOT be fixed with homology constraint alone
-        # No homology regions in the gap area
-        nohom_regions = [(50, 100), (1900, 1950)]
-        config = FragmentConfig(100, 200, 20, 50, min_step=30)
+        seq = "A" * 100 + "GAATTC" + "A" * 20 + "GAATTC" + "A" * 400 + "GAATTC" + "A" * 20 + "GAATTC" + "A" * 100
+        # Gap has no no-homology regions and must be bridged without homology
+        nohom_regions = [(90, 150), (500, len(seq))]
+        config = FragmentConfig(100, 250, 20, 50, min_step=20, motif="GAATTC")
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        
-        # fragmentor.fix_graph()
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        fragmentor.fix_graph()
         
         # Should be connected after fix
-        # assert nx.is_weakly_connected(fragmentor.graph)
+        assert nx.is_weakly_connected(fragmentor.graph)
         
         # Should have no-constraint edges (weight=100)
-        # has_no_constraint_edges = any(
-        #     data.get('constraints') == 'none'
-        #     for _, _, data in fragmentor.graph.edges(data=True)
-        # )
-        # assert has_no_constraint_edges
+        has_no_constraint_edges = any(
+            data.get('constraints') == 'none'
+            for _, _, data in fragmentor.graph.edges(data=True)
+        )
+        assert has_no_constraint_edges
 
 
 class TestFragmentorShortestPath:
