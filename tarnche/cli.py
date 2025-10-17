@@ -72,3 +72,102 @@ def annotate_homology_cmd(query_sequence, background, kmer_size, threshold, outp
     )
     
     click.echo(f"✓ Wrote annotated sequences to {output}")
+
+
+@cli.command(
+    name="fragment",
+    help="""
+    Fragment an annotated sequence around no-homology regions with overlap and boundary constraints.
+    INPUT is the GenBank file with no-homology annotated regions (from annotate-homology command).
+    """,
+    short_help="Fragment a sequence with overlap constraints.",
+    no_args_is_help=True,
+)
+@click.argument(
+    "input",
+    type=click.Path(exists=True, readable=True),
+)
+@click.option(
+    "--min-size",
+    type=int,
+    required=True,
+    help="Minimum fragment size (bp)",
+)
+@click.option(
+    "--max-size",
+    type=int,
+    required=True,
+    help="Maximum fragment size (bp)",
+)
+@click.option(
+    "--min-overlap",
+    type=int,
+    required=True,
+    help="Minimum overlap between fragments (bp)",
+)
+@click.option(
+    "--max-overlap",
+    type=int,
+    required=True,
+    help="Maximum overlap between fragments (bp)",
+)
+@click.option(
+    "--boundary-motif",
+    type=str,
+    default=None,
+    help="Motif that must occur at fragment boundaries (start and end)",
+)
+@click.option(
+    "--min-step",
+    type=int,
+    default=10,
+    show_default=True,
+    help="Step size for scanning overlap positions (bp)",
+)
+@click.option(
+    "-o",
+    "--output",
+    default="fragmented.gb",
+    show_default=True,
+    type=click.Path(writable=True),
+    help="Output annotated GenBank file",
+)
+@click.option(
+    "-f",
+    "--fasta",
+    default="fragments.fasta",
+    show_default=True,
+    type=click.Path(writable=True),
+    help="Output multi-fasta file for fragments",
+)
+def fragment_cmd(input, min_size, max_size, min_overlap, max_overlap, boundary_motif, min_step, output, fasta):
+    """Fragment a sequence with overlap constraints."""
+    from tarnche.fragment_annotator import fragment_from_file, FragmentConfig
+    
+    click.echo(f"Processing input file: {input}")
+    click.echo(f"Fragment size: {min_size}-{max_size} bp")
+    click.echo(f"Overlap: {min_overlap}-{max_overlap} bp")
+    if boundary_motif:
+        click.echo(f"Boundary motif: {boundary_motif}")
+    click.echo(f"Step size: {min_step} bp")
+    
+    # Create configuration
+    config = FragmentConfig(
+        min_size=min_size,
+        max_size=max_size,
+        min_overlap=min_overlap,
+        max_overlap=max_overlap,
+        motif=boundary_motif,
+        min_step=min_step,
+    )
+    
+    # Call the fragmentation function
+    fragment_from_file(
+        input_file=input,
+        output_gb=output,
+        output_fasta=fasta,
+        config=config,
+    )
+    
+    click.echo(f"✓ Fragmentation complete!")
+

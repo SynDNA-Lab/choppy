@@ -184,6 +184,20 @@ class Fragmentor:
         if not nx.is_weakly_connected(self.graph):
             self.fix_graph()
         return nx.shortest_path(self.graph, (0, 0), (self.seq_len, self.seq_len), weight="weight")
+    
+    def get_fragments(self):
+        path = self.get_shortest_path()
+
+        fragments = []
+        for i in range(len(path) - 1):
+            frag_start = path[i][0]
+            frag_end = path[i + 1][1]
+            overlap_start = path[i + 1][0]
+            overlap_end = path[i + 1][1]
+            overlap_constraints = self.graph.edges[path[i], path[i + 1]]["constraints"]
+            fragments.append((frag_start, frag_end, overlap_start, overlap_end, overlap_constraints))
+
+        return fragments
 
 # end of Fragmentor class
 
@@ -206,7 +220,11 @@ def extract_no_homology_regions(record: SeqRecord) -> list[tuple[int, int]]:
     nohom_regions.sort()
     return nohom_regions
 
-def annotate_fragments(record, fragments):
+def annotate_fragments(record: SeqRecord, config):
+
+    fragmentor = Fragmentor(str(record.seq), extract_no_homology_regions(record), config)
+    fragments = fragmentor.get_fragments()
+
     new_features = list(getattr(record, "features", []))
     frag_records = []
     for idx, (
@@ -214,7 +232,7 @@ def annotate_fragments(record, fragments):
         frag_end,
         overlap_start,
         overlap_end,
-        actual_overlap,
+        overlap_constraints,
     ) in enumerate(fragments, 1):
         frag_feat = SeqFeature(
             FeatureLocation(frag_start, frag_end),
@@ -224,9 +242,7 @@ def annotate_fragments(record, fragments):
                 "overlap_region": f"{overlap_start}-{overlap_end}"
                 if overlap_start is not None
                 else "None",
-                "actual_overlap": str(actual_overlap)
-                if actual_overlap is not None
-                else "None",
+                "constraints": overlap_constraints,
             },
         )
         new_features.append(frag_feat)
@@ -234,12 +250,30 @@ def annotate_fragments(record, fragments):
         frag_rec = SeqRecord(
             frag_seq,
             id=f"{record.id}_fragment_{idx}",
-            description=f"Fragment {idx}: {frag_start}-{frag_end}, overlap: {overlap_start}-{overlap_end}, actual_overlap: {actual_overlap}",
+            description=f"Fragment {idx}: {frag_start}-{frag_end}, overlap: {overlap_start}-{overlap_end}, constraints: {overlap_constraints}",
         )
         frag_records.append(frag_rec)
     record.features = new_features
     return (record, frag_records)
 
+def fragment_from_file(
+    input_file: str,
+    output_gb: str,
+    output_fasta: str,
+    config: FragmentConfig,
+):
+    input_record = SeqIO.read(input_file, "genbank")
+    nohom_regions = extract_no_homology_regions(input_record)
+    if not nohom_regions:
+        raise RuntimeError("No no-homology regions found in input annotation!")
+
+    (record, frag_records) = annotate_fragments(input_record, config)
+    with open(output_gb, "w") as gbo:
+        SeqIO.write(record, gbo, "genbank")
+    with open(output_fasta, "w") as fao:
+        SeqIO.write(frag_records, fao, "fasta")
+
+    print(f"Wrote {len(frag_records)} fragments to {output_gb} and {output_fasta}")
 
 # def main():
 #     parser = argparse.ArgumentParser(
