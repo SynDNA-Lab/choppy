@@ -620,33 +620,11 @@ class TestFragmentorShortestPath:
         nohom_regions = [(30, 120)]
         config = FragmentConfig(100, 200, 20, 50)
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # path = fragmentor.get_shortest_path()
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        path = fragmentor.get_shortest_path()
         
-        # Minimum path should have start, one intermediate, and end
-        # Or if the entire sequence fits in one fragment: start -> end
-        # assert len(path) >= 2
-        # assert path[0] == (0, 0)
-        # assert path[-1] == (150, 150)
-    
-    def test_shortest_path_validates_fragment_sizes(self):
-        """Test that fragments in the shortest path respect size constraints."""
-        seq = "A" * 1000
-        nohom_regions = [(100, 300), (500, 700)]
-        config = FragmentConfig(150, 400, 30, 70, min_step=30)
-        
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # path = fragmentor.get_shortest_path()
-        
-        # Check each fragment in the path
-        # for i in range(len(path) - 1):
-        #     fragment_start = path[i][0]
-        #     fragment_end = path[i+1][1]
-        #     fragment_length = fragment_end - fragment_start
-        #     
-        #     # Fragment should respect size constraints
-        #     assert fragment_length >= config.min_size
-        #     assert fragment_length <= config.max_size
+        # Minimum path should go directly from start to end
+        assert path == [(0, 0), (150, 150)]
     
     def test_shortest_path_with_motif_constraint(self):
         """Test shortest path when using motif-based overlaps."""
@@ -654,21 +632,18 @@ class TestFragmentorShortestPath:
         nohom_regions = [(0, len(seq))]
         config = FragmentConfig(100, 300, 20, 50, motif="GAATTC", min_step=20)
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # path = fragmentor.get_shortest_path()
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        path = fragmentor.get_shortest_path()
         
         # Should find a path
-        # assert path[0] == (0, 0)
-        # assert path[-1] == (len(seq), len(seq))
+        assert path[0] == (0, 0)
+        assert path[-1] == (len(seq), len(seq))
         
         # Verify overlaps align with motif when using intermediate nodes
-        # for i in range(1, len(path) - 1):
-        #     node = path[i]
-        #     # Overlap nodes should be at motif positions
-        #     if node[0] > 0 and node[0] < len(seq):
-        #         # Check if position aligns with motif
-        #         pass  # Implementation depends on exact motif positioning logic
-
+        for i in range(1, len(path) - 1):
+            start, end = path[i]
+            assert seq[start:start+6] == "GAATTC"
+            assert seq[end-6:end] == "GAATTC"
 
 class TestFragmentorEdgeCases:
     """Tests for edge cases in Fragmentor."""
