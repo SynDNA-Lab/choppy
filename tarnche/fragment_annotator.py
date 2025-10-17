@@ -30,17 +30,17 @@ class Fragmentor:
         self.nohom_regions = nohom_regions
 
         print(f"Calculating possible overlaps...")
-        overlaps = self.get_possible_overlaps(self)
+        overlaps = self.get_possible_overlaps()
         print(f"Constructing overlap graph...")
-        graph = self.construct_overlap_graph(self, overlaps)
+        graph = self.construct_overlap_graph(overlaps)
 
     def get_possible_overlaps(self):
         if self.config.motif is None:
             # for free overlaps, we don't care about max_overlap
             # the smaller the overlap, the better
-            overlaps = self.get_possible_free_overlaps(self)
+            overlaps = self.get_possible_free_overlaps()
         else:
-            overlaps = self.get_possible_motif_overlaps(self)
+            overlaps = self.get_possible_motif_overlaps()
 
         overlaps.sort(key=lambda x: x[0])
         overlaps = list(dict.fromkeys(overlaps))
@@ -51,8 +51,8 @@ class Fragmentor:
     def get_possible_free_overlaps(self):
         overlaps = []
         for region in self.nohom_regions:
-            for pos in range(region[0] + self.min_overlap, region[1], self.min_step):
-                overlaps.append((pos - self.min_overlap, pos))
+            for pos in range(region[0] + self.config.min_overlap, region[1], self.config.min_step):
+                overlaps.append((pos - self.config.min_overlap, pos))
         return overlaps
 
     def get_possible_motif_overlaps(self):
@@ -65,8 +65,8 @@ class Fragmentor:
                     (
                         p
                         for p in motif_positions
-                        if p - pos + motif_len - 1 >= self.min_overlap
-                        and p - pos + motif_len - 1 <= self.max_overlap
+                        if p - pos + motif_len - 1 >= self.config.min_overlap
+                        and p - pos + motif_len - 1 <= self.config.max_overlap
                     ),
                     None,
                 )
@@ -80,8 +80,8 @@ class Fragmentor:
             too_far = False
             j = i + 1
             while not too_far and j < len(overlaps):
-                if overlaps[j][1] - overlaps[i][0] >= self.min_length:
-                    if overlaps[j][1] - overlaps[i][0] <= self.max_length:
+                if overlaps[j][1] - overlaps[i][0] >= self.config.min_size:
+                    if overlaps[j][1] - overlaps[i][0] <= self.config.max_size:
                         graph.add_edge(overlaps[i], overlaps[j], weight=1, constraints="all")
                     else:
                         too_far = True
@@ -92,17 +92,17 @@ class Fragmentor:
         extra_vertices = []
         for i in range(len(components) - 1):
             gap_start = max(components[i], key=lambda x: x[1])
-            gap_start[0] -= self.min_length
+            gap_start[0] -= self.config.min_size
             gap_start[0] = max(gap_start[0], 0)
             gap_end = min(components[i+1], key=lambda x: x[0])
-            gap_end[1] += self.min_length
+            gap_end[1] += self.config.min_size
             gap_end[1] = min(gap_end[1], self.seq_len)
 
             for region in self.nohom_regions:
                 if region[0] < gap_end[1] and region[1] > gap_start[0]:
                     start = max(gap_start[1], region[0])
-                    while start + self.min_overlap <= min(region[1], gap_end[0]):
-                        extra_vertices.append((start - self.min_overlap, start))
+                    while start + self.config.min_overlap <= min(region[1], gap_end[0]):
+                        extra_vertices.append((start - self.config.min_overlap, start))
                         start += self.min_step
         self.add_extra_vertices(self, extra_vertices, 10, "homology")
     
@@ -111,26 +111,26 @@ class Fragmentor:
             self.graph.add_node(v)
             for u in self.graph.nodes:
                 if u[1] < v[0]:
-                    if v[1] - u[0] >= self.min_length and v[1] - u[0] <= self.max_length:
+                    if v[1] - u[0] >= self.config.min_size and v[1] - u[0] <= self.config.max_size:
                         self.graph.add_edge(u, v, weight=weight, constraints=constraints)
                 elif u[0] > v[1]:
-                    if u[1] - v[0] >= self.min_length and u[1] - v[0] <= self.max_length:
+                    if u[1] - v[0] >= self.config.min_size and u[1] - v[0] <= self.config.max_size:
                         self.graph.add_edge(v, u, weight=weight, constraints=constraints)
 
     def keep_no_constraint(self, components):
         extra_vertices = []
         for i in range(len(components) - 1):
             gap_start = max(components[i], key=lambda x: x[1])
-            gap_start[0] -= self.min_length
+            gap_start[0] -= self.config.min_size
             gap_start[0] = max(gap_start[0], 0)
             gap_end = min(components[i+1], key=lambda x: x[0])
-            gap_end[1] += self.min_length
+            gap_end[1] += self.config.min_size
             gap_end[1] = min(gap_end[1], self.seq_len)
 
             start = gap_start[0]
-            while start + self.min_overlap <= gap_end[1]:
-                extra_vertices.append((start - self.min_overlap, start))
-                start += self.max_length
+            while start + self.config.min_overlap <= gap_end[1]:
+                extra_vertices.append((start - self.config.min_overlap, start))
+                start += self.config.max_size
 
         self.add_extra_vertices(self, extra_vertices, 100, "none")
     

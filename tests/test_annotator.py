@@ -10,6 +10,7 @@ from Bio.SeqFeature import SeqFeature, FeatureLocation
 from tarnche.fragment_annotator import (
     FragmentConfig,
     extract_no_homology_regions,
+    Fragmentor
 )
 
 
@@ -84,12 +85,11 @@ class TestFragmentorInitialization:
         nohom_regions = [(5, 10)]
         config = FragmentConfig(100, 500, 20, 50)
         
-        # Note: Constructor currently has issues, but testing expected behavior
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # assert fragmentor.seq == "ATGCATGCATGC"  # Should be uppercase
-        # assert fragmentor.seq_len == len(seq)
-        # assert fragmentor.config == config
-        # assert fragmentor.nohom_regions == nohom_regions
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        assert fragmentor.seq == "ATGCATGCATGC"  # Should be uppercase
+        assert fragmentor.seq_len == len(seq)
+        assert fragmentor.config == config
+        assert fragmentor.nohom_regions == nohom_regions
     
     def test_init_with_multiple_regions(self):
         """Test initialization with multiple no-homology regions."""
