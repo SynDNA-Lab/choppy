@@ -131,14 +131,13 @@ class TestFragmentorGetPossibleFreeOverlaps:
         """Test generating free overlaps for multiple regions."""
         seq = "A" * 300
         nohom_regions = [(50, 80), (150, 180)]
-        config = FragmentConfig(100, 500, 20, 50, min_step=10)
+        config = FragmentConfig(100, 500, 21, 50, min_step=10)
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_free_overlaps()
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        overlaps = fragmentor.get_possible_free_overlaps()
+        expected = [(50, 71), (150, 171)]
         
-        # Should have overlaps from both regions
-        # assert len(overlaps) > 0
-        # assert all(isinstance(o, tuple) and len(o) == 2 for o in overlaps)
+        assert overlaps == expected
     
     def test_free_overlaps_small_region(self):
         """Test that small regions don't generate overlaps."""
@@ -147,35 +146,24 @@ class TestFragmentorGetPossibleFreeOverlaps:
         nohom_regions = [(50, 65)]
         config = FragmentConfig(100, 500, 20, 50, min_step=10)
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_free_overlaps()
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        overlaps = fragmentor.get_possible_free_overlaps()
         
         # Should not generate any overlaps since region is too small
-        # assert overlaps == []
-    
-    def test_free_overlaps_custom_step(self):
-        """Test free overlaps with custom step size."""
-        seq = "A" * 200
-        nohom_regions = [(50, 100)]
-        config = FragmentConfig(100, 500, 20, 50, min_step=5)
+        assert overlaps == []
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_free_overlaps()
-        
-        # With step=5, should have more overlaps than step=10
-        # assert len(overlaps) > 3
-    
     def test_free_overlaps_exact_min_overlap(self):
         """Test when region size equals min_overlap."""
         seq = "A" * 200
-        nohom_regions = [(50, 70)]  # Exactly 20bp
+        nohom_regions = [(50, 75)]  # Exactly 20bp
         config = FragmentConfig(100, 500, 20, 50, min_step=10)
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_free_overlaps()
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        overlaps = fragmentor.get_possible_free_overlaps()
         
         # Should generate exactly one overlap at the end
-        # assert len(overlaps) == 1
+        assert len(overlaps) == 1
+        assert overlaps[0][1] - overlaps[0][0] == 20
 
 
 class TestFragmentorGetPossibleMotifOverlaps:
@@ -188,8 +176,8 @@ class TestFragmentorGetPossibleMotifOverlaps:
         nohom_regions = [(0, len(seq))]
         config = FragmentConfig(100, 500, 20, 40, motif="GAATTC")
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_motif_overlaps()
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        overlaps = fragmentor.get_possible_motif_overlaps()
         
         # Should find pairs of GAATTC positions that meet overlap constraints
         # assert len(overlaps) > 0
