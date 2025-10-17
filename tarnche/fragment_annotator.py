@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Optional
 import re
 import networkx as nx
+from tqdm import tqdm
 from Bio import SeqIO
 from Bio.SeqFeature import SeqFeature, FeatureLocation
 from Bio.SeqRecord import SeqRecord
@@ -34,12 +35,21 @@ class Fragmentor:
         print(f"Constructing overlap graph...")
         graph = self.construct_overlap_graph(overlaps)
 
-    def get_possible_overlaps(self):
+    def get_possible_overlaps(self) -> list[tuple[int, int]]:
+        """
+        Generate possible overlap positions based on no-homology regions and boundary motif,
+        if provided.
+
+        Returns:
+            list[tuple[int, int]]: List of (start, end) tuples for possible overlaps.
+        """
         if self.config.motif is None:
             # for free overlaps, we don't care about max_overlap
             # the smaller the overlap, the better
+            print("No boundary motif provided, generating free overlaps inside no-homology regions...")
             overlaps = self.get_possible_free_overlaps()
         else:
+            print(f"Boundary motif '{self.config.motif}' provided, generating motif-based overlaps...")
             overlaps = self.get_possible_motif_overlaps()
 
         overlaps.sort(key=lambda x: x[0])
@@ -51,8 +61,8 @@ class Fragmentor:
     def get_possible_free_overlaps(self):
         overlaps = []
         for region in self.nohom_regions:
-            for pos in range(region[0] + self.config.min_overlap, region[1], self.config.min_step):
-                overlaps.append((pos - self.config.min_overlap, pos))
+            for pos in range(region[0], region[1] - self.config.min_overlap + 1, self.config.min_step):
+                overlaps.append((pos, pos + self.config.min_overlap))
         return overlaps
 
     def get_possible_motif_overlaps(self):

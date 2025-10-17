@@ -97,9 +97,9 @@ class TestFragmentorInitialization:
         nohom_regions = [(100, 150), (300, 350), (700, 750)]
         config = FragmentConfig(200, 800, 30, 60)
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # assert fragmentor.nohom_regions == nohom_regions
-        # assert fragmentor.seq_len == 1000
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        assert fragmentor.nohom_regions == nohom_regions
+        assert fragmentor.seq_len == 1000
     
     def test_init_uppercase_conversion(self):
         """Test that sequence is converted to uppercase."""
@@ -107,10 +107,8 @@ class TestFragmentorInitialization:
         nohom_regions = []
         config = FragmentConfig(100, 500, 20, 50)
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # assert fragmentor.seq == "ATGCATGCATGC"
-        # assert fragmentor.seq.isupper()
-
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        assert fragmentor.seq == "ATGCATGCATGC"
 
 class TestFragmentorGetPossibleFreeOverlaps:
     """Tests for Fragmentor.get_possible_free_overlaps method."""
@@ -121,13 +119,13 @@ class TestFragmentorGetPossibleFreeOverlaps:
         nohom_regions = [(50, 100)]
         config = FragmentConfig(100, 500, 20, 50, min_step=10)
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_free_overlaps()
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        overlaps = fragmentor.get_possible_free_overlaps()
         
-        # Should generate overlaps from position 70 (50+20) to 100, step 10
-        # Each overlap is (pos - min_overlap, pos)
-        # expected = [(50, 70), (60, 80), (70, 90)]
-        # assert overlaps == expected
+        # Should generate overlaps from position 50 to 100 - 20, step 10
+        # Each overlap is (pos, pos + min_overlap)
+        expected = [(50, 70), (60, 80), (70, 90), (80, 100)]
+        assert overlaps == expected
     
     def test_free_overlaps_multiple_regions(self):
         """Test generating free overlaps for multiple regions."""
