@@ -143,14 +143,20 @@ class Fragmentor:
         extra_vertices = []
         for i in range(len(components) - 1):
             gap_start_overlap = max(components[i], key=lambda x: x[1])
-            gap_start = max(gap_start_overlap[0] - self.config.min_size, 0)
+            gap_start = gap_start_overlap[0]
             gap_end_overlap = min(components[i+1], key=lambda x: x[0])
-            gap_end = min(gap_end_overlap[1] + self.config.min_size, self.seq_len)
+            gap_end = gap_end_overlap[1]
 
+            # if gap can't fit a fragment, extend it
+            if gap_end - gap_start < self.config.min_size:
+                gap_start = max(gap_start - self.config.min_size, 0)
+                gap_end = min(gap_end + self.config.min_size, self.seq_len)
+
+            step = (self.config.max_size - self.config.min_overlap) // 5
             start = gap_start
             while start + self.config.min_overlap <= gap_end:
                 extra_vertices.append((start, start + self.config.min_overlap))
-                start += self.config.max_size - self.config.min_overlap
+                start += step
 
         self.add_extra_vertices(extra_vertices, 100, "none")
     
@@ -176,8 +182,8 @@ class Fragmentor:
 
     def get_shortest_path(self):
         if not nx.is_weakly_connected(self.graph):
-            graph = self.fix_graph()
-        return nx.shortest_path(graph, (0, 0), (self.seq_len, self.seq_len), weight="weight")
+            self.fix_graph()
+        return nx.shortest_path(self.graph, (0, 0), (self.seq_len, self.seq_len), weight="weight")
 
 # end of Fragmentor class
 

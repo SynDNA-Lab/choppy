@@ -541,96 +541,64 @@ class TestFragmentorShortestPath:
         nohom_regions = [(50, 150), (250, 350)]
         config = FragmentConfig(100, 300, 20, 50, min_step=30)
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # path = fragmentor.get_shortest_path()
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        path = fragmentor.get_shortest_path()
         
         # Path should start at (0, 0) and end at (seq_len, seq_len)
-        # assert path[0] == (0, 0)
-        # assert path[-1] == (500, 500)
-        # assert len(path) >= 2
+        assert path[0] == (0, 0)
+        assert path[-1] == (500, 500)
+        assert len(path) == 3
     
     def test_get_shortest_path_disconnected_graph(self):
         """Test shortest path when graph needs fixing."""
         seq = "A" * 1000
         # Create scenario that will need graph fixing
         nohom_regions = [(50, 100), (800, 850)]
-        config = FragmentConfig(100, 200, 20, 50, min_step=40)
+        config = FragmentConfig(100, 500, 20, 50, min_step=10)
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
+        fragmentor = Fragmentor(seq, nohom_regions, config)
         # Graph might be disconnected initially
-        # path = fragmentor.get_shortest_path()
+        path = fragmentor.get_shortest_path()
         
         # Should still find a path after fixing
-        # assert path[0] == (0, 0)
-        # assert path[-1] == (1000, 1000)
+        assert path[0] == (0, 0)
+        assert path[-1] == (1000, 1000)
         # Path should be continuous (each node connects to next)
-        # for i in range(len(path) - 1):
-        #     assert (path[i], path[i+1]) in fragmentor.graph.edges
+        for i in range(len(path) - 1):
+            assert (path[i], path[i+1]) in fragmentor.graph.edges
+            assert path[i+1][1] - path[i][0] >= config.min_size
+            assert path[i+1][1] - path[i][0] <= config.max_size
+
+        # the path should have one normal edge and two edges without constraints
+        # edge (0,0) -> (80,100) is entirely replaced with a longer no-constraint edge
+        assert len(path) == 4
+        no_constraint_edges = 0
+        normal_edges = 0
+        for i in range(len(path) - 1):
+            edge_data = fragmentor.graph[path[i]][path[i+1]]
+            if edge_data.get('constraints') == 'none':
+                no_constraint_edges += 1
+            else:
+                normal_edges += 1
+        assert no_constraint_edges == 2
+        assert normal_edges == 1
     
     def test_shortest_path_minimizes_weight(self):
         """Test that shortest path minimizes total weight."""
-        seq = "A" * 600
-        nohom_regions = [(50, 200), (350, 500)]
-        config = FragmentConfig(100, 400, 20, 50, min_step=20)
+        seq = "A" * 650
+        nohom_regions = []
+        config = FragmentConfig(100, 350, 20, 50, min_step=10)
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # path = fragmentor.get_shortest_path()
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        fragmentor.graph.add_edge((0, 0), (280, 300), weight=1, constraints="normal")
+        fragmentor.graph.add_edge((0, 0), (450, 470), weight=10, constraints="large")
+        fragmentor.graph.add_edge((280, 300), (450, 470), weight=5, constraints="middle")
+        fragmentor.graph.add_edge((450, 470), (650, 650), weight=1, constraints="normal")
+        path = fragmentor.get_shortest_path()
         
-        # Calculate path weight
-        # path_weight = sum(
-        #     fragmentor.graph[path[i]][path[i+1]]['weight']
-        #     for i in range(len(path) - 1)
-        # )
-        
-        # Path weight should be reasonable (not excessively high)
-        # If we only use "all" constraint edges (weight=1), the weight should be low
-        # assert path_weight >= len(path) - 1  # At minimum, 1 per edge
-    
-    def test_shortest_path_prefers_lower_weight(self):
-        """Test that shortest path prefers edges with lower weight."""
-        seq = "A" * 500
-        nohom_regions = [(50, 150), (250, 350)]
-        config = FragmentConfig(100, 300, 20, 50, min_step=20)
-        
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # path = fragmentor.get_shortest_path()
-        
-        # Count edge types in path
-        # edge_types = {
-        #     'all': 0,
-        #     'homology': 0,
-        #     'none': 0
-        # }
-        # for i in range(len(path) - 1):
-        #     constraint = fragmentor.graph[path[i]][path[i+1]].get('constraints', 'unknown')
-        #     if constraint in edge_types:
-        #         edge_types[constraint] += 1
-        
-        # Should prefer 'all' constraint edges (weight=1) over others
-        # if edge_types['all'] > 0:
-        #     # If 'all' edges are available, they should dominate
-        #     assert edge_types['all'] >= edge_types['homology']
-        #     assert edge_types['all'] >= edge_types['none']
-    
-    def test_shortest_path_covers_entire_sequence(self):
-        """Test that the shortest path covers the entire sequence."""
-        seq = "A" * 800
-        nohom_regions = [(100, 200), (400, 500), (600, 700)]
-        config = FragmentConfig(150, 350, 25, 60, min_step=25)
-        
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # path = fragmentor.get_shortest_path()
-        
-        # Verify complete coverage
-        # assert path[0] == (0, 0)
-        # assert path[-1] == (800, 800)
-        
-        # Each consecutive pair in the path should overlap or be adjacent
-        # for i in range(len(path) - 1):
-        #     # Fragment i goes from path[i][0] to path[i+1][1]
-        #     # Fragment i+1 starts at path[i+1][0]
-        #     # There should be overlap: path[i+1][0] should be between path[i][0] and path[i+1][1]
-        #     assert path[i+1][0] <= path[i+1][1]
+        # The path should prefer the lower weight edges
+        expected_path = [(0, 0), (280, 300), (450, 470), (650, 650)]
+        assert path == expected_path
     
     def test_shortest_path_empty_nohom_regions(self):
         """Test shortest path with no homology regions."""
@@ -638,12 +606,13 @@ class TestFragmentorShortestPath:
         nohom_regions = []
         config = FragmentConfig(100, 250, 20, 50)
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # path = fragmentor.get_shortest_path()
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        path = fragmentor.get_shortest_path()
         
         # Should still find a path from start to end
-        # assert path[0] == (0, 0)
-        # assert path[-1] == (300, 300)
+        assert path[0] == (0, 0)
+        assert path[-1] == (300, 300)
+        assert len(path) == 3
     
     def test_shortest_path_single_fragment(self):
         """Test when entire sequence can be one fragment."""

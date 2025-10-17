@@ -44,3 +44,42 @@ config = FragmentConfig(100, 250, 20, 50, min_step=20)
 fragmentor = Fragmentor(seq, nohom_regions, config)
 initial_nodes = list(fragmentor.graph.nodes)
 initial_nodes
+
+# %%
+seq = "A" * 1000
+nohom_regions = [(50, 100), (800, 850)]
+config = FragmentConfig(100, 450, 20, 50, min_step=10)
+
+fragmentor = Fragmentor(seq, nohom_regions, config)
+initial_nodes = list(fragmentor.graph.nodes)
+print(initial_nodes)
+print(list(fragmentor.graph.edges))
+# %%
+
+# Graph might be disconnected initially
+path = fragmentor.get_shortest_path()
+print(path)
+
+# %%
+seq = "A" * 650
+nohom_regions = []
+config = FragmentConfig(100, 350, 20, 50, min_step=10)
+
+fragmentor = Fragmentor(seq, nohom_regions, config)
+fragmentor.graph.nodes
+
+# %%
+seq = "A" * 300
+nohom_regions = []
+config = FragmentConfig(100, 250, 20, 50)
+
+fragmentor = Fragmentor(seq, nohom_regions, config)
+print(fragmentor.graph.nodes)
+components = list(nx.weakly_connected_components(fragmentor.graph))
+print(components)
+
+fragmentor.fix_graph()
+print(fragmentor.graph.nodes)
+
+path = fragmentor.get_shortest_path()
+print(path)
