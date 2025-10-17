@@ -180,8 +180,11 @@ class TestFragmentorGetPossibleMotifOverlaps:
         overlaps = fragmentor.get_possible_motif_overlaps()
         
         # Should find pairs of GAATTC positions that meet overlap constraints
-        # assert len(overlaps) > 0
-        # assert all(isinstance(o, tuple) and len(o) == 2 for o in overlaps)
+        assert len(overlaps) == 2
+        # Verify each overlap starts and ends with the motif
+        for start, end in overlaps:
+            assert seq[start:start+6] == "GAATTC"
+            assert seq[end-6:end] == "GAATTC"
     
     def test_motif_overlaps_no_motif_found(self):
         """Test when motif doesn't exist in sequence."""
@@ -189,61 +192,67 @@ class TestFragmentorGetPossibleMotifOverlaps:
         nohom_regions = [(0, len(seq))]
         config = FragmentConfig(100, 500, 20, 40, motif="GAATTC")
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_motif_overlaps()
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        overlaps = fragmentor.get_possible_motif_overlaps()
         
-        # assert overlaps == []
+        assert overlaps == []
     
     def test_motif_overlaps_insufficient_spacing(self):
         """Test when motif occurrences are too close together."""
-        # Two GAATTC motifs only 10bp apart, but min_overlap is 20
+        # The only possible overlap is 16bp long (including the motifs), but min_overlap is 20
         seq = "ATGC" + "GAATTC" + "ATGC" + "GAATTC" + "ATGC"
         nohom_regions = [(0, len(seq))]
         config = FragmentConfig(100, 500, 20, 40, motif="GAATTC")
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_motif_overlaps()
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        overlaps = fragmentor.get_possible_motif_overlaps()
         
         # Should not find valid overlaps since spacing is insufficient
-        # assert overlaps == []
+        assert overlaps == []
     
     def test_motif_overlaps_excessive_spacing(self):
         """Test when motif occurrences are too far apart."""
-        # Two GAATTC motifs 60bp apart, but max_overlap is 40
+        # Two GAATTC motifs 60bp apart, but max_overlap is 40 
         seq = "ATGC" + "GAATTC" + "A" * 60 + "GAATTC" + "ATGC"
         nohom_regions = [(0, len(seq))]
         config = FragmentConfig(100, 500, 20, 40, motif="GAATTC")
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_motif_overlaps()
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        overlaps = fragmentor.get_possible_motif_overlaps()
         
         # Should not find valid overlaps since spacing exceeds max_overlap
-        # assert overlaps == []
+        assert overlaps == []
     
     def test_motif_overlaps_multiple_regions(self):
         """Test motif overlaps across multiple regions."""
-        seq = "GAATTC" + "A" * 20 + "GAATTC" + "T" * 100 + "GAATTC" + "A" * 20 + "GAATTC"
-        nohom_regions = [(0, 50), (110, 160)]
+        seq = "GAATTC" + "A" * 20 + "GAATTC" + "T" * 20 + "GAATTC" + "A" * 20 + "GAATTC"
+        nohom_regions = [(0, 40), (50, len(seq))]
         config = FragmentConfig(100, 500, 20, 40, motif="GAATTC")
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_motif_overlaps()
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        overlaps = fragmentor.get_possible_motif_overlaps()
         
-        # Should find overlaps in both regions
-        # assert len(overlaps) >= 2
+        # Should find overlaps in both 
+        # The overlap that spans across regions is invalid
+        assert overlaps == [(0, 32), (52, 84)]
     
     def test_motif_overlaps_exact_boundaries(self):
         """Test motif at exact min and max overlap boundaries."""
         # Create sequence with motifs at exactly 20bp and 40bp apart
-        seq = "GAATTC" + "A" * 14 + "GAATTC" + "A" * 20 + "GAATTC" + "A" * 34 + "GAATTC"
+        seq = "GAATTC" + "A" * 8 + "GAATTC" + "A" * 7 + "GAATTC" + "A" * 28 + "GAATTC"  + "A" * 29 + "GAATTC"
         nohom_regions = [(0, len(seq))]
         config = FragmentConfig(100, 500, 20, 40, motif="GAATTC")
         
-        # fragmentor = Fragmentor(seq, nohom_regions, config)
-        # overlaps = fragmentor.get_possible_motif_overlaps()
+        fragmentor = Fragmentor(seq, nohom_regions, config)
+        overlaps = fragmentor.get_possible_motif_overlaps()
         
         # Should find overlaps at boundary conditions
-        # assert len(overlaps) > 0
+        for start, end in overlaps:
+            assert end - start <= 40
+            assert end - start >= 20
+        
+        assert (0, 20) in overlaps # the smallest overlap that should be found
+        assert (27, 67) in overlaps # the largest overlap that should be found
 
 
 class TestFragmentorGetPossibleOverlaps:

@@ -67,21 +67,22 @@ class Fragmentor:
 
     def get_possible_motif_overlaps(self):
         overlaps = []
-        motif_len = len(self.motif)
+        motif_len = len(self.config.motif)
+        motif_pattern = re.compile(self.config.motif)
         for region in self.nohom_regions:
-            motif_positions = [m.start() for m in re.finditer(self.motif, self.seq, pos=region[0], endpos=region[1])]
+            motif_positions = [m.start() for m in motif_pattern.finditer(self.seq, pos=region[0], endpos=region[1])]
             for pos in motif_positions:
                 next_pos = next(
                     (
                         p
                         for p in motif_positions
-                        if p - pos + motif_len - 1 >= self.config.min_overlap
-                        and p - pos + motif_len - 1 <= self.config.max_overlap
+                        if p - pos + motif_len >= self.config.min_overlap
+                        and p - pos + motif_len <= self.config.max_overlap
                     ),
                     None,
                 )
                 if next_pos is not None:
-                    overlaps.append((pos, next_pos))
+                    overlaps.append((pos, next_pos + motif_len))
         return overlaps
 
     def construct_overlap_graph(self, overlaps):
