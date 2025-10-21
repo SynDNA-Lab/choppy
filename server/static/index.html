@@ -28,12 +28,44 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
     
     const formData = new FormData(e.target);
     
-    const response = await fetch('/annotate-homology', {
-        method: 'POST',
-        body: formData
-    });
-    
-    const result = await response.json();
-    console.log(result);
+    try {
+        const response = await fetch('/annotate-homology', {
+            method: 'POST',
+            body: formData
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        // Get the filename from Content-Disposition header
+        const contentDisposition = response.headers.get('Content-Disposition');
+        let filename = 'annotated_sequences.gb';
+        if (contentDisposition) {
+            const filenameMatch = contentDisposition.match(/filename="?(.+)"?/);
+            if (filenameMatch) {
+                filename = filenameMatch[1];
+            }
+        }
+        
+        // Get the file content as a blob
+        const blob = await response.blob();
+        
+        // Create a download link and trigger it
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        
+        // Clean up
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+
+    } catch (error) {
+        console.error('Error:', error);
+        alert('Error processing file: ' + error.message);
+    }
 });
 </script>
