@@ -1,1 +1,39 @@
-<div>AAAAA!</div>
+<form id="uploadForm" enctype="multipart/form-data">
+    <div>
+        <label>Query Sequence:</label>
+        <input type="file" name="query_file" accept=".gb,.gbk,.genbank,.fa,.fasta" required>
+    </div>
+    
+    <div>
+        <label>Background Sequences:</label>
+        <input type="file" name="background_files" accept=".gb,.gbk,.genbank,.fa,.fasta" multiple>
+    </div>
+    
+    <div>
+        <label>K-mer Size:</label>
+        <input type="number" name="kmer_size" value="20">
+    </div>
+    
+    <div>
+        <label>Threshold:</label>
+        <input type="number" name="threshold" value="60">
+    </div>
+    
+    <button type="submit">Process</button>
+</form>
+
+<script>
+document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    const formData = new FormData(e.target);
+    
+    const response = await fetch('/annotate-homology', {
+        method: 'POST',
+        body: formData
+    });
+    
+    const result = await response.json();
+    console.log(result);
+});
+</script>
