@@ -430,8 +430,8 @@ document.getElementById('processButton').addEventListener('click', async () => {
         if (queryFile) {
             formData.append('query_file', queryFile);
         } else {
-            const blob = new Blob([queryText], { type: 'text/plain' });
-            formData.append('query_file', blob, 'query_sequence.txt');
+            const blob = new Blob([">User_Sequence\n" + queryText], { type: 'text/plain' });
+            formData.append('query_file', blob, 'query_sequence.fasta');
         }
         
         for (let i = 0; i < backgroundFiles.length; i++) {
