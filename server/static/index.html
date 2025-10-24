@@ -93,6 +93,87 @@
                         </div>
                     </div>
                 </div>
+                <div class="grid-item">
+                    <h5 class="title is-5">
+                        Parameters for the fragmentor
+                        <span class="icon has-text-info" style="cursor: pointer;" onclick="openModal('fragmentParamsModal')">
+                            <i class="fas fa-info-circle"></i>
+                        </span>
+                    </h5>
+                    <div class="field is-horizontal">
+                        <div class="field-label is-normal">
+                            <label class="label">Min Size (bp)</label>
+                        </div>
+                        <div class="field-body">
+                            <div class="field">
+                                <div class="control">
+                                    <input class="input" type="number" name="min_size" value="500" min="1">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="field is-horizontal">
+                        <div class="field-label is-normal">
+                            <label class="label">Max Size (bp)</label>
+                        </div>
+                        <div class="field-body">
+                            <div class="field">
+                                <div class="control">
+                                    <input class="input" type="number" name="max_size" value="3000" min="1">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="field is-horizontal">
+                        <div class="field-label is-normal">
+                            <label class="label">Min Overlap (bp)</label>
+                        </div>
+                        <div class="field-body">
+                            <div class="field">
+                                <div class="control">
+                                    <input class="input" type="number" name="min_overlap" value="60" min="1">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="field is-horizontal">
+                        <div class="field-label is-normal">
+                            <label class="label">Max Overlap (bp)</label>
+                        </div>
+                        <div class="field-body">
+                            <div class="field">
+                                <div class="control">
+                                    <input class="input" type="number" name="max_overlap" value="100" min="1">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="field is-horizontal">
+                        <div class="field-label is-normal">
+                            <label class="label">Boundary Motif</label>
+                        </div>
+                        <div class="field-body">
+                            <div class="field">
+                                <div class="control">
+                                    <input id="boundaryMotif" class="input" type="text" name="boundary_motif" placeholder="e.g., GC (optional)">
+                                </div>
+                                <p id="motifError" class="help is-danger" style="display: none;"></p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="field is-horizontal">
+                        <div class="field-label is-normal">
+                            <label class="label">Min Step (bp)</label>
+                        </div>
+                        <div class="field-body">
+                            <div class="field">
+                                <div class="control">
+                                    <input class="input" type="number" name="min_step" value="10" min="1">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </section>
@@ -154,9 +235,48 @@
         </header>
         <section class="modal-card-body">
             <div class="content">
-                <p>Choppy makes sure that o</p>
-                <p><strong>K-mer Size:</strong> The size of the k-mers used to identify homologous regions between the query and background sequences. A larger k-mer size increases specificity but may miss shorter homologous regions.</p>
-                <p><strong>Threshold:</strong> The minimum length of a region that will be annotated as a non-homologeous one.</p>
+                <p>Choppy makes sure that the overlapping regions of the fragments are not present in the background. 
+                    To this end, the overlapping regions are allowed only in the so called non-homologous regions. These
+                    parameters control how these regions are defined.
+                </p>
+                <p><strong>K-mer Size:</strong> The size of the k-mers used to identify non-homologous regions. 
+                    A region can be called non-homologous only if it doesn't share any kmers with the backgroud sequences.</p>
+                <p><strong>Threshold:</strong> The minimum length of a region that will be annotated as a non-homologous.
+                Use it to avoid cluttering the annotation with the regions that are too short to contain a valid overlap.</p>
+            </div>
+        </section>
+    </div>
+</div>
+<div id="fragmentParamsModal" class="modal">
+    <div class="modal-background" onclick="closeModal('fragmentParamsModal')"></div>
+    <div class="modal-card">
+        <header class="modal-card-head">
+            <p class="modal-card-title">Fragment Parameters</p>
+            <button class="delete" aria-label="close" onclick="closeModal('fragmentParamsModal')"></button>
+        </header>
+        <section class="modal-card-body">
+            <div class="content">
+                <p>These parameters control how your sequence will be fragmented for TAR cloning.</p>
+                
+                <p><strong>Min Size &amp; Max Size:</strong> The minimum and maximum length of each fragment in base pairs. 
+                Fragments will be generated within this size range.</p>
+                
+                <p><strong>Min Overlap &amp; Max Overlap:</strong> The minimum and maximum length of overlapping regions 
+                between adjacent fragments in base pairs. These overlaps enable homologous recombination during assembly.</p>
+                
+                <p><strong>Boundary Motif:</strong> (Optional) A DNA sequence motif that must occur at fragment boundaries 
+                (both start and end). For example, "GC" ensures fragments start and end with this motif. Leave empty to allow 
+                any boundary.</p>
+                
+                <p><strong>Min Step:</strong> Step size for scanning overlap positions in base pairs. Smaller values provide 
+                more precise fragmentation but take longer to compute. Default is 10 bp.</p>
+                
+                <div class="notification is-info is-light">
+                    <p class="is-size-7">
+                        <strong>Note:</strong> Overlaps will only be placed in non-homologous regions identified by the 
+                        homology finder parameters above.
+                    </p>
+                </div>
             </div>
         </section>
     </div>
@@ -194,10 +314,18 @@ function validateSequence(sequence) {
     return validPattern.test(sequence);
 }
 
+function validateMotif(motif) {
+    // Only ATCG allowed, no spaces or other characters
+    const validPattern = /^[ATCGatcg]*$/;
+    return validPattern.test(motif);
+}
+
 const querySequenceTextarea = document.getElementById('querySequence');
 const sequenceError = document.getElementById('sequenceError');
 const queryFileInput = document.getElementById('queryFileInput');
 const queryFileName = document.getElementById('queryFileName');
+const boundaryMotifInput = document.getElementById('boundaryMotif');
+const motifError = document.getElementById('motifError');
 
 queryFileInput.addEventListener('change', function() {
     if (this.files.length > 0) {
@@ -227,6 +355,26 @@ querySequenceTextarea.addEventListener('input', function() {
     } else {
         this.classList.remove('is-danger');
         sequenceError.style.display = 'none';
+    }
+});
+
+// Boundary motif validation
+boundaryMotifInput.addEventListener('input', function() {
+    const value = this.value;
+    
+    if (value.length === 0) {
+        // Empty is okay (optional field)
+        this.classList.remove('is-danger');
+        motifError.style.display = 'none';
+    } else if (!validateMotif(value)) {
+        // Invalid characters found
+        this.classList.add('is-danger');
+        motifError.textContent = 'Invalid characters detected. Only A, T, C, G are allowed.';
+        motifError.style.display = 'block';
+    } else {
+        // Valid motif
+        this.classList.remove('is-danger');
+        motifError.style.display = 'none';
     }
 });
 
