@@ -37,38 +37,131 @@
                         </label>
                     </div>
                 </div>
+                <div class="grid-item">
+                    <label class="label">
+                        Background sequences
+                        <span class="icon has-text-info" style="cursor: pointer;" onclick="openModal('backgroundModal')">
+                            <i class="fas fa-info-circle"></i>
+                        </span>
+                    </label>
+                    <div class="file has-name is-fullwidth">
+                        <label class="file-label">
+                            <input class="file-input" type="file" name="background_files" accept=".gb,.gbk,.genbank,.fa,.fasta" multiple/>
+                            <span class="file-cta">
+                                <span class="file-icon">
+                                    <i class="fas fa-upload"></i>
+                                </span>
+                                <span class="file-label"> Choose files… </span>
+                            </span>
+                            <span id="backgroundFileNames" class="file-name"> No files selected </span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="fixed-grid">
+            <div class="grid">
+                <div class="grid-item">
+                    <h5 class="title is-5">
+                        Parameters for the homology finder
+                        <span class="icon has-text-info" style="cursor: pointer;" onclick="openModal('homologyParamsModal')">
+                            <i class="fas fa-info-circle"></i>
+                        </span>
+                    </h5>
+                    <div class="field is-horizontal">
+                        <div class="field-label is-normal">
+                            <label class="label">K-mer Size</label>
+                        </div>
+                        <div class="field-body">
+                            <div class="field">
+                                <div class="control">
+                                    <input class="input" type="number" name="kmer_size" value="20" min="1">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="field is-horizontal">
+                        <div class="field-label is-normal">
+                            <label class="label">Threshold</label>
+                        </div>
+                        <div class="field-body">
+                            <div class="field">
+                                <div class="control">
+                                    <input class="input" type="number" name="threshold" value="60" min="1">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </section>
 
-    <!-- Modal for Query Sequence Info -->
-    <div id="queryModal" class="modal">
-        <div class="modal-background" onclick="closeModal('queryModal')"></div>
-        <div class="modal-card">
-            <header class="modal-card-head">
-                <p class="modal-card-title">Query Sequence Information</p>
-                <button class="delete" aria-label="close" onclick="closeModal('queryModal')"></button>
-            </header>
-            <section class="modal-card-body">
-                <div class="content">
-                    <p>Enter your DNA sequence as plaintext or upload a file in one of the following formats:</p>
-                    <p><strong>Supported formats:</strong></p>
-                    <ul>
-                        <li>FASTA format</li>
-                        <li>GenBank format</li>
+<!-- Modals for extra info -->
+<div id="queryModal" class="modal">
+    <div class="modal-background" onclick="closeModal('queryModal')"></div>
+    <div class="modal-card">
+        <header class="modal-card-head">
+            <p class="modal-card-title">Query Sequence Information</p>
+            <button class="delete" aria-label="close" onclick="closeModal('queryModal')"></button>
+        </header>
+        <section class="modal-card-body">
+            <div class="content">
+                <p>Enter your DNA sequence as plaintext or upload a file in one of the following formats:</p>
+                <p><strong>Supported formats:</strong></p>
+                <ul>
+                    <li>FASTA format</li>
+                    <li>GenBank format</li>
+                </ul>
+                
+                <div class="notification">
+                    <p class="is-size-6 has-text-weight-semibold mb-2">Important notes:</p>
+                    <ul class="is-size-7">
+                        <li>Currently only one sequence at a time can be analysed.</li>
+                        <li>If you upload a file in the GenBank format, all the existing annotations will be included in the output.</li>
                     </ul>
-                    
-                    <div class="notification">
-                        <p class="is-size-6 has-text-weight-semibold mb-2">Important notes:</p>
-                        <ul class="is-size-7">
-                            <li>Currently only one sequence at a time can be analysed.</li>
-                            <li>If you upload a file in the GenBank format, all the existing annotations will be included in the output.</li>
-                        </ul>
-                    </div>
                 </div>
-            </section>
-        </div>
+            </div>
+        </section>
     </div>
+</div>
+<div id="backgroundModal" class="modal">
+    <div class="modal-background" onclick="closeModal('backgroundModal')"></div>
+    <div class="modal-card">
+        <header class="modal-card-head">
+            <p class="modal-card-title">Background Sequences Information</p>
+            <button class="delete" aria-label="close" onclick="closeModal('backgroundModal')"></button>
+        </header>
+        <section class="modal-card-body">
+            <div class="content">
+                <p>Upload one or more backgroud sequences files in the following formats:</p>
+                <p><strong>Supported formats:</strong></p>
+                <ul>
+                    <li>FASTA format</li>
+                    <li>GenBank format</li>
+                </ul>
+                <p>Motifs from these sequences will be avoided in the overlapping areas of the generated fragments.</p>
+            </div>
+        </section>
+    </div>
+</div>
+<div id="homologyParamsModal" class="modal">
+    <div class="modal-background" onclick="closeModal('homologyParamsModal')"></div>
+    <div class="modal-card">
+        <header class="modal-card-head">
+            <p class="modal-card-title">Homology Parameters</p>
+            <button class="delete" aria-label="close" onclick="closeModal('homologyParamsModal')"></button>
+        </header>
+        <section class="modal-card-body">
+            <div class="content">
+                <p>Choppy makes sure that o</p>
+                <p><strong>K-mer Size:</strong> The size of the k-mers used to identify homologous regions between the query and background sequences. A larger k-mer size increases specificity but may miss shorter homologous regions.</p>
+                <p><strong>Threshold:</strong> The minimum length of a region that will be annotated as a non-homologeous one.</p>
+            </div>
+        </section>
+    </div>
+</div>
+
 
 <form id="uploadForm" enctype="multipart/form-data">
     <div>

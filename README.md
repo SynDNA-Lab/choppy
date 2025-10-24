@@ -80,6 +80,42 @@ tarnche annotate-homology --help
 tarnche fragment --help
 ```
 
+## Development - Running the Web Server
+
+To run the FastAPI web interface for interactive sequence annotation:
+
+### Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/SynDNA-Lab/TARnche.git
+cd TARnche
+
+# Configure poetry to create .venv in project directory
+poetry config virtualenvs.in-project true
+
+# Install dependencies with server extras
+poetry install --extras server
+
+# Activate the virtual environment
+source .venv/bin/activate
+```
+
+### Start the Server
+
+```bash
+# Run the FastAPI server
+fastapi dev server/main.py
+```
+
+The server will start at `http://127.0.0.1:8000`
+
+Open your browser and navigate to:
+- `http://127.0.0.1:8000` - Main web interface with WebSocket support
+- `http://127.0.0.1:8000/simple` - Simple POST-based interface
+- `http://127.0.0.1:8000/docs` - API documentation (Swagger UI)
+
+
 ## Acknowledgement
 Initial prototype (not part of this code base) was written by [@dglaizal](https://github.com/dglaizal)
 
