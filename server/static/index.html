@@ -56,6 +56,24 @@
                             <span id="backgroundFileNames" class="file-name"> No files selected </span>
                         </label>
                     </div>
+                   <div class="field is-grouped">
+                        <p class="control">
+                            <button id="processButton" class="button is-primary" type="button">
+                                <span class="icon">
+                                    <i class="fas fa-play"></i>
+                                </span>
+                                <span>Run</span>
+                            </button>
+                        </p>
+                        <p class="control">
+                            <button class="button is-link disabled" type="button" disabled>
+                                <span class="icon">
+                                    <i class="fas fa-download"></i>
+                                </span>
+                                <span>Download Background</span>
+                            </button>
+                        </p>
+                    </div>                    
                 </div>
             </div>
         </div>
@@ -283,30 +301,6 @@
 </div>
 
 
-<form id="uploadForm" enctype="multipart/form-data">
-    <div>
-        <label>Query Sequence:</label>
-        <input type="file" name="query_file" accept=".gb,.gbk,.genbank,.fa,.fasta" required>
-    </div>
-    
-    <div>
-        <label>Background Sequences:</label>
-        <input type="file" name="background_files" accept=".gb,.gbk,.genbank,.fa,.fasta" multiple>
-    </div>
-    
-    <div>
-        <label>K-mer Size:</label>
-        <input type="number" name="kmer_size" value="20">
-    </div>
-    
-    <div>
-        <label>Threshold:</label>
-        <input type="number" name="threshold" value="60">
-    </div>
-    
-    <button type="submit">Process</button>
-</form>
-
 <script>
 
 function validateSequence(sequence) {
@@ -326,6 +320,21 @@ const queryFileInput = document.getElementById('queryFileInput');
 const queryFileName = document.getElementById('queryFileName');
 const boundaryMotifInput = document.getElementById('boundaryMotif');
 const motifError = document.getElementById('motifError');
+
+// Handle background files display
+const backgroundFilesInput = document.querySelector('input[name="background_files"]');
+const backgroundFileNames = document.getElementById('backgroundFileNames');
+
+if (backgroundFilesInput) {
+    backgroundFilesInput.addEventListener('change', function() {
+        if (this.files.length > 0) {
+            const fileNames = Array.from(this.files).map(f => f.name).join(', ');
+            backgroundFileNames.textContent = `${this.files.length} file(s): ${fileNames}`;
+        } else {
+            backgroundFileNames.textContent = 'No files selected';
+        }
+    });
+}
 
 queryFileInput.addEventListener('change', function() {
     if (this.files.length > 0) {
@@ -396,13 +405,49 @@ document.addEventListener('keydown', function(event) {
     }
 });
 
-document.getElementById('uploadForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    
-    const formData = new FormData(e.target);
+document.getElementById('processButton').addEventListener('click', async () => {
+    const button = document.getElementById('processButton');
     
     try {
-        const response = await fetch('/annotate-homology', {
+        const queryText = querySequenceTextarea.value.trim();
+        const queryFile = queryFileInput.files[0];
+        const backgroundFilesInput = document.querySelector('input[name="background_files"]');
+        const backgroundFiles = backgroundFilesInput ? backgroundFilesInput.files : [];
+        
+        if (!queryText && !queryFile) {
+            alert('Please provide a query sequence (either as text or file upload)');
+            return;
+        }
+        if (sequenceError.style.display !== 'none' || motifError.style.display !== 'none') {
+            alert('Please fix validation errors before submitting');
+            return;
+        }
+        button.disabled = true;
+        button.innerHTML = '<span class="icon"><i class="fas fa-spinner fa-spin"></i></span><span>Processing...</span>';
+        
+        const formData = new FormData();
+        
+        if (queryFile) {
+            formData.append('query_file', queryFile);
+        } else {
+            const blob = new Blob([queryText], { type: 'text/plain' });
+            formData.append('query_file', blob, 'query_sequence.txt');
+        }
+        
+        for (let i = 0; i < backgroundFiles.length; i++) {
+            formData.append('background_files', backgroundFiles[i]);
+        }
+        
+        formData.append('kmer_size', document.querySelector('input[name="kmer_size"]').value);
+        formData.append('threshold', document.querySelector('input[name="threshold"]').value);
+        formData.append('min_size', document.querySelector('input[name="min_size"]').value);
+        formData.append('max_size', document.querySelector('input[name="max_size"]').value);
+        formData.append('min_overlap', document.querySelector('input[name="min_overlap"]').value);
+        formData.append('max_overlap', document.querySelector('input[name="max_overlap"]').value);
+        formData.append('boundary_motif', boundaryMotifInput.value);
+        formData.append('min_step', document.querySelector('input[name="min_step"]').value);
+        
+        const response = await fetch('/process-and-fragment', {
             method: 'POST',
             body: formData
         });
@@ -411,36 +456,45 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
         
-        // Get the filename from Content-Disposition header
-        const contentDisposition = response.headers.get('Content-Disposition');
-        let filename = 'annotated_sequences.gb';
-        if (contentDisposition) {
-            const filenameMatch = contentDisposition.match(/filename="?(.+)"?/);
-            if (filenameMatch) {
-                filename = filenameMatch[1];
-            }
+        const result = await response.json();
+        
+        if (result.annotated_file) {
+            downloadBase64File(result.annotated_file, result.annotated_filename || 'annotated.gb');
         }
         
-        // Get the file content as a blob
-        const blob = await response.blob();
+        if (result.fragments_file) {
+            downloadBase64File(result.fragments_file, result.fragments_filename || 'fragments.fasta');
+        }
         
-        // Create a download link and trigger it
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
+        alert('Processing complete! Files downloaded.');
         
-        // Clean up
-        window.URL.revokeObjectURL(url);
-        document.body.removeChild(a);
-
     } catch (error) {
         console.error('Error:', error);
-        alert('Error processing file: ' + error.message);
+        alert('Error processing sequence: ' + error.message);
+    } finally {
+        button.disabled = false;
+        button.innerHTML = '<span class="icon"><i class="fas fa-play"></i></span><span>Run</span>';
     }
 });
+
+// Helper function to download base64-encoded file
+function downloadBase64File(base64Data, filename) {
+    const binaryString = atob(base64Data);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: 'application/octet-stream' });
+    
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+}
 </script>    
 </body>
 </html>
