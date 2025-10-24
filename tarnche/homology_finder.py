@@ -217,10 +217,19 @@ def create_annotated_record(
 
     return record
 
-def annotate_homology(query_path, background_path, output_path, kmer_size=20, threshold=60):
-
+def file_process_homology(query_path, background_path, output_path, kmer_size=20, threshold=60):
     query_sequences = parse_sequence_files(query_path)
     background_sequences = parse_sequence_files(background_path)
+
+    output_records = annotate_homology(query_sequences, background_sequences, kmer_size, threshold)
+
+    output_format = (
+        "genbank" if output_path.endswith((".gb", ".gbk", ".genbank")) else "fasta"
+    )
+    with open(output_path, "w") as handle:
+        SeqIO.write(output_records, handle, output_format)
+
+def annotate_homology(query_sequences, background_sequences, kmer_size=20, threshold=60):
     bg_trie = process_background_sequences(background_sequences, kmer_size)
     query_tries = process_query_sequences(query_sequences, kmer_size)
     output_records = []
@@ -230,10 +239,7 @@ def annotate_homology(query_path, background_path, output_path, kmer_size=20, th
         )
         output_record = create_annotated_record(query_seq, regions)
         output_records.append(output_record)
+    
+    return output_records
 
-    output_format = (
-        "genbank" if output_path.endswith((".gb", ".gbk", ".genbank")) else "fasta"
-    )
-    with open(output_path, "w") as handle:
-        SeqIO.write(output_records, handle, output_format)
     

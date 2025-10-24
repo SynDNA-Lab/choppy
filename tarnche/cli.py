@@ -1,6 +1,4 @@
 import click
-from Bio import SeqIO
-
 
 @click.group()
 def cli():
@@ -56,14 +54,14 @@ def cli():
 )
 def annotate_homology_cmd(query_sequence, background, kmer_size, threshold, output):
     """Find and annotate non-homologous regions."""
-    from tarnche.homology_finder import annotate_homology
+    from tarnche.homology_finder import file_process_homology
     
     click.echo(f"Processing query sequence: {query_sequence}")
     click.echo(f"Background sequences: {', '.join(background)}")
     click.echo(f"K-mer size: {kmer_size}, Threshold: {threshold}")
     
     # Call the main function
-    annotate_homology(
+    file_process_homology(
         query_path=query_sequence,
         background_path=list(background),
         output_path=output,

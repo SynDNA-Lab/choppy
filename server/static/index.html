@@ -1,3 +1,75 @@
+<!DOCTYPE html> 
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@1.0.4/css/bulma.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <title>Sequence Homology Annotator</title>
+</head>
+<body>
+    <section class="section">
+        <h1 class="title">Choppy</h1>
+        <h2 class="subtitle">A tool to chop your sequence into pieces</h2>
+    </section>
+    <section class="section">
+        <div class="fixed-grid">
+            <div class="grid">
+                <div class="grid-item">
+                    <label class="label">
+                        Query sequence
+                        <span class="icon has-text-info" style="cursor: pointer;" onclick="openModal('queryModal')">
+                            <i class="fas fa-info-circle"></i>
+                        </span>
+                    </label>
+                    <textarea id="querySequence" class="textarea" placeholder="Insert your sequence here"></textarea>
+                    <p id="sequenceError" class="help is-danger" style="display: none;"></p>
+                    <div class="file has-name is-fullwidth">
+                        <label class="file-label">
+                            <input id="queryFileInput" class="file-input" type="file" name="query_file" accept=".gb,.gbk,.genbank,.fa,.fasta"/>
+                            <span class="file-cta">
+                                <span class="file-icon">
+                                    <i class="fas fa-upload"></i>
+                                </span>
+                                <span class="file-label"> Choose a file… </span>
+                            </span>
+                            <span id="queryFileName" class="file-name"> No file selected </span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Modal for Query Sequence Info -->
+    <div id="queryModal" class="modal">
+        <div class="modal-background" onclick="closeModal('queryModal')"></div>
+        <div class="modal-card">
+            <header class="modal-card-head">
+                <p class="modal-card-title">Query Sequence Information</p>
+                <button class="delete" aria-label="close" onclick="closeModal('queryModal')"></button>
+            </header>
+            <section class="modal-card-body">
+                <div class="content">
+                    <p>Enter your DNA sequence as plaintext or upload a file in one of the following formats:</p>
+                    <p><strong>Supported formats:</strong></p>
+                    <ul>
+                        <li>FASTA format</li>
+                        <li>GenBank format</li>
+                    </ul>
+                    
+                    <div class="notification">
+                        <p class="is-size-6 has-text-weight-semibold mb-2">Important notes:</p>
+                        <ul class="is-size-7">
+                            <li>Currently only one sequence at a time can be analysed.</li>
+                            <li>If you upload a file in the GenBank format, all the existing annotations will be included in the output.</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </div>
+
 <form id="uploadForm" enctype="multipart/form-data">
     <div>
         <label>Query Sequence:</label>
@@ -23,6 +95,66 @@
 </form>
 
 <script>
+
+function validateSequence(sequence) {
+    const validPattern = /^[ATCGatcg\s\t\n\r]*$/;
+    return validPattern.test(sequence);
+}
+
+const querySequenceTextarea = document.getElementById('querySequence');
+const sequenceError = document.getElementById('sequenceError');
+const queryFileInput = document.getElementById('queryFileInput');
+const queryFileName = document.getElementById('queryFileName');
+
+queryFileInput.addEventListener('change', function() {
+    if (this.files.length > 0) {
+        const file = this.files[0];
+        queryFileName.textContent = file.name;
+        querySequenceTextarea.disabled = true;
+        querySequenceTextarea.placeholder = 'Text input disabled (file selected)';
+    } else {
+        queryFileName.textContent = 'No file selected';
+        querySequenceTextarea.disabled = false;
+        querySequenceTextarea.placeholder = 'Insert your sequence here';
+    }
+});
+
+
+querySequenceTextarea.addEventListener('input', function() {
+    const value = this.value;
+    
+    // Validation
+    if (value.length === 0) {
+        this.classList.remove('is-danger');
+        sequenceError.style.display = 'none';
+    } else if (!validateSequence(value)) {
+        this.classList.add('is-danger');
+        sequenceError.textContent = 'Invalid characters detected. Only A, T, C, G, spaces, tabs, and line breaks are allowed.';
+        sequenceError.style.display = 'block';
+    } else {
+        this.classList.remove('is-danger');
+        sequenceError.style.display = 'none';
+    }
+});
+
+// Modal functions
+function openModal(modalId) {
+    document.getElementById(modalId).classList.add('is-active');
+}
+
+function closeModal(modalId) {
+    document.getElementById(modalId).classList.remove('is-active');
+}
+
+// Close modal when pressing ESC key
+document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape') {
+        document.querySelectorAll('.modal.is-active').forEach(modal => {
+            modal.classList.remove('is-active');
+        });
+    }
+});
+
 document.getElementById('uploadForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     
@@ -68,4 +200,6 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
         alert('Error processing file: ' + error.message);
     }
 });
-</script>
+</script>    
+</body>
+</html>

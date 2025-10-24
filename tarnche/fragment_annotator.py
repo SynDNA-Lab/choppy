@@ -221,7 +221,6 @@ def extract_no_homology_regions(record: SeqRecord) -> list[tuple[int, int]]:
     return nohom_regions
 
 def annotate_fragments(record: SeqRecord, config):
-
     fragmentor = Fragmentor(str(record.seq), extract_no_homology_regions(record), config)
     fragments = fragmentor.get_fragments()
 
@@ -274,72 +273,3 @@ def fragment_from_file(
         SeqIO.write(frag_records, fao, "fasta")
 
     print(f"Wrote {len(frag_records)} fragments to {output_gb} and {output_fasta}")
-
-# def main():
-#     parser = argparse.ArgumentParser(
-#         description="Fragment an annotated sequence around no homology regions with overlap and boundary constraints."
-#     )
-#     parser.add_argument(
-#         "input",
-#         help="Input GenBank file with no-homology annotated regions (from homology_finder.py)",
-#     )
-#     parser.add_argument(
-#         "--min-size", type=int, required=True, help="Minimum fragment size (bp)"
-#     )
-#     parser.add_argument(
-#         "--max-size", type=int, required=True, help="Maximum fragment size (bp)"
-#     )
-#     parser.add_argument(
-#         "--min-overlap",
-#         type=int,
-#         required=True,
-#         help="Minimum overlap between fragments (bp)",
-#     )
-#     parser.add_argument(
-#         "--max-overlap",
-#         type=int,
-#         required=True,
-#         help="Maximum overlap between fragments (bp)",
-#     )
-#     parser.add_argument(
-#         "--boundary-motif",
-#         type=str,
-#         default=None,
-#         help="Motif that must occur at fragment boundaries (start and end)",
-#     )
-#     parser.add_argument(
-#         "-o", "--output", default="fragmented.gb", help="Output annotated GenBank"
-#     )
-#     parser.add_argument(
-#         "-f",
-#         "--fasta",
-#         default="fragments.fasta",
-#         help="Output multi-fasta file for fragments",
-#     )
-#     args = parser.parse_args()
-
-#     input_record = SeqIO.read(args.input, "genbank")
-#     nohom_regions = extract_no_homology_regions(input_record)
-#     if not nohom_regions:
-#         raise RuntimeError("No no-homology regions found in input annotation!")
-
-#     # Step 1: Fragmentation
-#     raw_fragments = fragment_sequence(
-#         input_record.seq,
-#         nohom_regions,
-#         min_size=args.min_size,
-#         max_size=args.max_size,
-#         min_overlap=args.min_overlap,
-#         max_overlap=args.max_overlap,
-#         motif=args.boundary_motif,
-#     )
-#     # Step 2: Merge adjacent fragments where possible
-#     merged_fragments = merge_fragments(raw_fragments, args.max_size)
-
-#     (record, frag_records) = annotate_fragments(input_record, merged_fragments)
-#     with open(args.output, "w") as gbo:
-#         SeqIO.write(record, gbo, "genbank")
-#     with open(args.fasta, "w") as fao:
-#         SeqIO.write(frag_records, fao, "fasta")
-
-#     print(f"Wrote {len(merged_fragments)} fragments to {args.output} and {args.fasta}")
