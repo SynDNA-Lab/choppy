@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "tarnche"
+name = "choppy"
 version = "0.1.0"
 description = "Cut a sequence into pieces with hanging overlaps"
 authors = ["Your Name <you@example.com>"]
@@ -14,9 +14,9 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
 ]
-homepage = "https://github.com/SynDNA-Lab/TARnche"
-repository = "https://github.com/SynDNA-Lab/TARnche"
-documentation = "https://github.com/SynDNA-Lab/TARnche"
+homepage = "https://github.com/SynDNA-Lab/choppy"
+repository = "https://github.com/SynDNA-Lab/choppy"
+documentation = "https://github.com/SynDNA-Lab/choppy"
 
 [tool.poetry.dependencies]
 python = "^3.12"
@@ -44,7 +44,7 @@ sphinx = "^5.0"
 sphinx-rtd-theme = "^1.0"
 
 [tool.poetry.scripts]
-tarnche = "tarnche.cli:cli"
+choppy = "choppy.cli:cli"
 
 
 [build-system]

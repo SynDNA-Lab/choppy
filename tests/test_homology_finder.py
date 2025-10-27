@@ -3,7 +3,7 @@ Tests for the homology finder module.
 """
 import pytest
 from pathlib import Path
-from tarnche.homology_finder import (
+from choppy.homology_finder import (
     parse_sequence_files, 
     create_kmer_trie,
     merge_tries,

@@ -3,8 +3,8 @@ from fastapi.responses import Response, JSONResponse
 from starlette.responses import FileResponse
 from io import BytesIO, StringIO
 from Bio import SeqIO
-from tarnche.homology_finder import process_background_sequences, process_query_sequences, find_non_homologous_regions, create_annotated_record
-from tarnche.fragment_annotator import annotate_fragments, FragmentConfig
+from choppy.homology_finder import process_background_sequences, process_query_sequences, find_non_homologous_regions, create_annotated_record
+from choppy.fragment_annotator import annotate_fragments, FragmentConfig
 import base64
 
 
@@ -73,10 +73,10 @@ async def process_and_fragment_endpoint(
     background_files: list[UploadFile] = File(default=[]),
     kmer_size: int = Form(20),
     threshold: int = Form(60),
-    min_size: int = Form(...),
-    max_size: int = Form(...),
-    min_overlap: int = Form(...),
-    max_overlap: int = Form(...),
+    min_size: int = Form(500),
+    max_size: int = Form(3000),
+    min_overlap: int = Form(60),
+    max_overlap: int = Form(100),
     boundary_motif: str = Form(""),
     min_step: int = Form(10),
 ):
@@ -159,7 +159,7 @@ async def process_and_fragment_endpoint(
             "annotated_filename": "annotated_sequences.gb",
             "fragments_file": fragments_b64,
             "fragments_filename": "fragments.fasta",
-            "message": "Processing complete! Note: Fragmentor is currently a placeholder."
+            "message": "Processing complete!"
         })
         
     except Exception as e:

@@ -1,4 +1,4 @@
-# TARnche
+# Choppy
 Functionalities for chopping up DNA for TAR cloning (and other homology based methods).
 
 ## Motivation
@@ -6,8 +6,8 @@ This repo is for developing tools to chop DNA sequences into smaller fragments
 for in vivo DNA assembly by homologous recombination in the yeast S. cerevisiae
 (TAR cloning).
 
-**Name:** the name is inspired from the term 'la tranche' (frz. for slice) and mixed
-with the term 'TAR' (transformation associated recombination).
+**Name:** the name reflects the tool's purpose - chopping DNA sequences into fragments
+for TAR (transformation associated recombination) cloning.
 
 ## Installation
 
@@ -15,8 +15,8 @@ with the term 'TAR' (transformation associated recombination).
 
 ```bash
 # Clone the repository
-git clone https://github.com/SynDNA-Lab/TARnche.git
-cd TARnche
+git clone https://github.com/SynDNA-Lab/choppy.git
+cd choppy
 
 # Install with poetry (recommended)
 poetry install
@@ -32,7 +32,7 @@ pip install .
 Find and annotate non-homologous regions in query sequences compared to background sequences:
 
 ```bash
-tarnche annotate-homology lambda_genome-NC_001416.gb \
+choppy annotate-homology lambda_genome-NC_001416.gb \
     -b S_cerevisiae-R64-GCA_000146045_cat.fa \
     -b pSDL32-TAR_shuffle-pCC1-Gibson.gb \
     -b pMaM819-Double-marker-plasmid_fixedColEI-pMLPstar.gb \
@@ -51,7 +51,7 @@ tarnche annotate-homology lambda_genome-NC_001416.gb \
 Fragment an annotated sequence based on homology-free regions and overlap constraints:
 
 ```bash
-tarnche fragment lambda_genome-NC_001416_hfanno.gb \
+choppy fragment lambda_genome-NC_001416_hfanno.gb \
     --min-size 500 --max-size 3188 \
     --min-overlap 60 --max-overlap 100 \
     --boundary-motif 'GC' \
@@ -75,9 +75,9 @@ tarnche fragment lambda_genome-NC_001416_hfanno.gb \
 For more information on any command:
 
 ```bash
-tarnche --help
-tarnche annotate-homology --help
-tarnche fragment --help
+choppy --help
+choppy annotate-homology --help
+choppy fragment --help
 ```
 
 ## Development - Running the Web Server
@@ -88,8 +88,8 @@ To run the FastAPI web interface for interactive sequence annotation:
 
 ```bash
 # Clone the repository
-git clone https://github.com/SynDNA-Lab/TARnche.git
-cd TARnche
+git clone https://github.com/SynDNA-Lab/choppy.git
+cd choppy
 
 # Configure poetry to create .venv in project directory
 poetry config virtualenvs.in-project true

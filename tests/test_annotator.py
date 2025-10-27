@@ -8,7 +8,7 @@ from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 from Bio.Seq import Seq
 from Bio.SeqFeature import SeqFeature, FeatureLocation
-from tarnche.fragment_annotator import (
+from choppy.fragment_annotator import (
     FragmentConfig,
     extract_no_homology_regions,
     Fragmentor

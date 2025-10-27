@@ -1,1 +1,1 @@
-"""Tests for the tarnche package."""
+"""Tests for the choppy package."""
