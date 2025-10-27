@@ -7,8 +7,7 @@ from choppy.homology_finder import process_background_sequences, process_query_s
 from choppy.fragment_annotator import annotate_fragments, FragmentConfig
 import base64
 
-
-app = FastAPI()
+app = FastAPI(root_path="/choppy")
 
 @app.get("/")
 async def read_root():

@@ -447,7 +447,7 @@ document.getElementById('processButton').addEventListener('click', async () => {
         formData.append('boundary_motif', boundaryMotifInput.value);
         formData.append('min_step', document.querySelector('input[name="min_step"]').value);
         
-        const response = await fetch('/process-and-fragment', {
+        const response = await fetch('./process-and-fragment', {
             method: 'POST',
             body: formData
         });
