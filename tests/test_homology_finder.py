@@ -9,7 +9,9 @@ from choppy.homology_finder import (
     merge_tries,
     process_background_sequences,
     process_query_sequences,
-    find_non_homologous_regions
+    find_non_homologous_regions,
+    save_trie,
+    load_trie
 )
 import marisa_trie as mt
 from Bio.SeqRecord import SeqRecord
@@ -150,7 +152,6 @@ def test_process_background_sequences_merged():
     gb_path = get_test_data_path("test_sequences.gb")
     sequences = parse_sequence_files(str(gb_path))
     
-    # Test with merge=True (default)
     bg_trie = process_background_sequences(sequences, kmer_size=4, merge=True)
     assert isinstance(bg_trie, mt.Trie), "Should return a single marisa_trie.Trie object when merge=True"
     assert len(bg_trie) == 22, "Merged background trie should contain 22 unique k-mers"
@@ -161,20 +162,16 @@ def test_process_background_sequences_not_merged():
     gb_path = get_test_data_path("test_sequences.gb")
     sequences = parse_sequence_files(str(gb_path))
     
-    # Test with merge=False
     bg_tries = process_background_sequences(sequences, kmer_size=4, merge=False)
     assert isinstance(bg_tries, list), "Should return a list when merge=False"
     assert len(bg_tries) == 2, "Should return a list with 2 tries (one per sequence)"
     assert all(isinstance(trie, mt.Trie) for trie in bg_tries), "All items should be marisa_trie.Trie objects"
-    
-    # Check individual trie sizes
     assert len(bg_tries[0]) == 9, "First trie should have 9 unique k-mers"
     assert len(bg_tries[1]) == 13, "Second trie should have 13 unique k-mers"
 
 
 def test_process_background_sequences_empty():
     """Test processing empty background sequences"""
-    # Test with empty list and merge=False
     bg_tries = process_background_sequences([], kmer_size=4, merge=False)
     assert isinstance(bg_tries, list), "Should return a list when merge=False"
     assert len(bg_tries) == 1, "Should return a list with one empty trie"
@@ -193,7 +190,6 @@ def test_find_non_homologous_regions_with_merged_bg():
     
     query_trie = create_kmer_trie(query_seq, kmer_size=5, bg=False)
     
-    # Test with merged background (merge=True)
     bg_trie_merged = process_background_sequences([bg_seq1, bg_seq2], kmer_size=5, merge=True)
     regions_merged = find_non_homologous_regions(
         query_seq, query_trie, bg_trie_merged, kmer_size=5, threshold=5
@@ -209,3 +205,25 @@ def test_find_non_homologous_regions_with_merged_bg():
     )
     assert len(regions_unmerged) == 3, "Should find 3 non-homologous regions with unmerged background"
     assert regions_unmerged == [(0, 5), (12, 20), (19, 26)]
+
+
+def test_save_and_load_trie(tmp_path):
+    """Test saving and loading a trie to/from file."""
+    gb_path = get_test_data_path("test_sequences.gb")
+    sequences = parse_sequence_files(str(gb_path))
+    
+    original_trie = process_background_sequences(sequences, kmer_size=4, merge=True)
+    
+    trie_file = tmp_path / "test_trie.marisa"
+    save_trie(original_trie, str(trie_file))
+
+    assert trie_file.exists(), "Trie file should exist after saving"
+    
+    loaded_trie = load_trie(str(trie_file))
+    
+    assert isinstance(loaded_trie, mt.Trie), "Loaded trie should be a marisa_trie.Trie object"
+    assert len(loaded_trie) == len(original_trie), f"Loaded trie should have same size as original ({len(original_trie)})"
+    
+    original_kmers = set(original_trie.keys())
+    loaded_kmers = set(loaded_trie.keys())
+    assert original_kmers == loaded_kmers, "Loaded trie should contain exactly the same k-mers as original"
