@@ -6,7 +6,7 @@ import gc
 from Bio.SeqRecord import SeqRecord
 from tqdm import tqdm
 sys.path.insert(0, '/home/tyranchick/git/TARnche')
-from tarnche.homology_finder import (parse_sequence_files, create_kmer_dictionary, create_kmer_trie)
+from choppy.homology_finder import (parse_sequence_files, create_kmer_dictionary, create_kmer_trie)
 # %%
 keys = ['foo', 'bar', 'foobar', 'foo']
 values = [(1, 2), (2, 1), (3, 3), (2, 1)]

@@ -1,10 +1,13 @@
 # %%
 from Bio import SeqIO
+from Bio.Seq import Seq
 from Bio.SeqFeature import SeqFeature, FeatureLocation
 from Bio.SeqRecord import SeqRecord
 import networkx as nx
+import marisa_trie as mt
 
-from tarnche.fragment_annotator import extract_no_homology_regions, Fragmentor, FragmentConfig
+from choppy.fragment_annotator import extract_no_homology_regions, Fragmentor, FragmentConfig
+from choppy.homology_finder import create_kmer_trie, find_non_homologous_regions
 # %%
 
 input_record = list(SeqIO.parse("/home/tyranchick/git/TARnche/tests/data/annotated.gb", "genbank"))
@@ -83,3 +86,9 @@ print(fragmentor.graph.nodes)
 
 path = fragmentor.get_shortest_path()
 print(path)
+# %%
+seq = SeqRecord(Seq("ATGCATGCAAGGCCTT"), id="test", description="test sequence")
+query_trie = create_kmer_trie(seq, kmer_size=4, bg=False)
+bg_trie = mt.Trie()
+regions = find_non_homologous_regions(seq, query_trie, bg_trie, kmer_size=4, threshold=5)
+regions

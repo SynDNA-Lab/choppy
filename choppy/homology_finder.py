@@ -95,7 +95,7 @@ def merge_tries(tries: List[mt.Trie]) -> mt.Trie:
     return mt.Trie(all_kmers)
 
 def process_background_sequences(
-    background_sequences: List[SeqRecord], kmer_size: int
+    background_sequences: List[SeqRecord], kmer_size: int, merge: bool = True
 ) -> mt.Trie:
     """
     Process background sequences to create a combined k-mer trie.
@@ -112,12 +112,17 @@ def process_background_sequences(
         trie = create_kmer_trie(bg_seq, kmer_size, bg=True)
         tries.append(trie)
 
-    if tries:
-        combined_trie = merge_tries(tries)
+    if merge:
+        if tries:
+            combined_trie = merge_tries(tries)
+        else:
+            combined_trie = mt.Trie()
+        return combined_trie
     else:
-        combined_trie = mt.Trie()
-
-    return combined_trie
+        if len(tries) == 0:
+            tries.append(mt.Trie())
+        return tries
+  
 
 def process_query_sequences(
     query_sequences: List[SeqRecord], kmer_size: int
@@ -139,8 +144,25 @@ def process_query_sequences(
 
     return results
 
+def check_kmer_in_tries(tries: List[mt.Trie], kmer: str) -> bool:
+    """
+    Check if a k-mer exists in any of the provided tries.
+
+    Args:
+        tries (List[mt.Trie]): List of k-mer tries  
+        kmer (str): K-mer to check
+    Returns:
+        bool: True if k-mer is found in any trie, False otherwise
+    """
+    for trie in tries:
+        if kmer in trie:
+            return True
+    return False
+
 def find_non_homologous_regions(
-    sequence: SeqRecord, query_trie: mt.Trie, bg_trie: mt.Trie, kmer_size: int, threshold: int
+    sequence: SeqRecord, query_trie: mt.Trie, 
+    bg_tries: Union[mt.Trie, List[mt.Trie]], 
+    kmer_size: int, threshold: int
 ) -> list:
     """
     Find non-homologous regions in a sequence based on k-mer tries.
@@ -148,7 +170,7 @@ def find_non_homologous_regions(
     Args:
         sequence (SeqRecord): Input query sequence
         query_trie (mt.Trie): K-mer trie for the query sequence
-        bg_trie (mt.Trie): K-mer trie for the background sequences
+        bg_tries (mt.Trie or List[mt.Treis]): K-mer trie or tries for the background sequences
         kmer_size (int): Size of k-mers
         threshold (int): Minimum size of non-homologous regions to report
 
@@ -156,6 +178,9 @@ def find_non_homologous_regions(
         List[(int, int)]: List of tuples representing start and end positions of non-homologous regions
     """
     sequence_str = str(sequence.seq)
+
+    if isinstance(bg_tries, mt.Trie):
+        bg_tries = [bg_tries]
 
     if sequence.annotations.get("topology", "").lower() == "circular":
         sequence_str = sequence_str + sequence_str[0:kmer_size - 1]
@@ -165,7 +190,7 @@ def find_non_homologous_regions(
     opened = False
     for i in tqdm(range(len(sequence_str) - kmer_size + 1), desc="Finding non-homologous regions"):
         kmer = sequence_str[i : i + kmer_size]
-        if kmer not in bg_trie and kmer not in query_trie:
+        if not check_kmer_in_tries(bg_tries, kmer) and kmer not in query_trie:
             if not opened:
                 start = i
                 opened = True
@@ -230,7 +255,7 @@ def file_process_homology(query_path, background_path, output_path, kmer_size=20
         SeqIO.write(output_records, handle, output_format)
 
 def annotate_homology(query_sequences, background_sequences, kmer_size=20, threshold=60):
-    bg_trie = process_background_sequences(background_sequences, kmer_size)
+    bg_trie = process_background_sequences(background_sequences, kmer_size, merge = False)
     query_tries = process_query_sequences(query_sequences, kmer_size)
     output_records = []
     for query_seq in query_sequences:
