@@ -94,6 +94,29 @@ def merge_tries(tries: List[mt.Trie]) -> mt.Trie:
     
     return mt.Trie(all_kmers)
 
+def save_trie(trie: mt.Trie, file_path: str):
+    """
+    Save a marisa_trie to a file.
+
+    Args:
+        trie (mt.Trie): marisa_trie.Trie object to save
+        file_path (str): Path to save the trie
+    """
+    trie.save(file_path)
+
+def load_trie(file_path: str) -> mt.Trie:
+    """
+    Load a marisa_trie from a file.
+
+    Args:
+        file_path (str): Path to load the trie from
+    Returns:
+        mt.Trie: Loaded marisa_trie.Trie object
+    """
+    trie = mt.Trie()
+    trie.load(file_path)
+    return trie
+
 def process_background_sequences(
     background_sequences: List[SeqRecord], kmer_size: int, merge: bool = True
 ) -> mt.Trie:
@@ -241,6 +264,15 @@ def create_annotated_record(
     )
 
     return record
+
+def store_trie_from_file(path: str, trie_path: str, kmer_size: int = 20):
+    sequences = parse_sequence_files(path)
+    combined_trie = process_background_sequences(sequences, kmer_size)
+    save_trie(combined_trie, trie_path)
+
+def store_trie_from_sequences(sequences: List[SeqRecord], trie_path: str, kmer_size: int = 20):
+    combined_trie = process_background_sequences(sequences, kmer_size)
+    save_trie(combined_trie, trie_path)
 
 def file_process_homology(query_path, background_path, output_path, kmer_size=20, threshold=60):
     query_sequences = parse_sequence_files(query_path)

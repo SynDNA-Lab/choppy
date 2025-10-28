@@ -169,3 +169,50 @@ def fragment_cmd(input, min_size, max_size, min_overlap, max_overlap, boundary_m
     
     click.echo(f"✓ Fragmentation complete!")
 
+
+@cli.command(
+    name="store-trie",
+    help="""
+    Create and store a k-mer trie from sequence file(s) for later use.
+    INPUT is the path to sequence file(s) (GenBank or FASTA).
+    The trie will be saved to the specified output file for use with other commands.
+    """,
+    short_help="Create and store k-mer trie from sequences.",
+    no_args_is_help=True,
+)
+@click.argument(
+    "input",
+    type=click.Path(exists=True, readable=True),
+)
+@click.option(
+    "-k",
+    "--kmer-size",
+    type=int,
+    default=20,
+    show_default=True,
+    help="Size of k-mers",
+)
+@click.option(
+    "-o",
+    "--output",
+    required=True,
+    type=click.Path(writable=True),
+    help="Output trie file path",
+)
+def store_trie_cmd(input, kmer_size, output):
+    """Create and store a k-mer trie from sequence file(s)."""
+    from choppy.homology_finder import store_trie_from_file
+    
+    click.echo(f"Processing input file: {input}")
+    click.echo(f"K-mer size: {kmer_size}")
+    
+    # Call the store_trie_from_file function
+    store_trie_from_file(
+        path=input,
+        trie_path=output,
+        kmer_size=kmer_size,
+    )
+    
+    click.echo(f"✓ Trie saved to {output}")
+
+
