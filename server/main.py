@@ -1,15 +1,34 @@
 from fastapi import FastAPI, File, UploadFile, Form, Request
 from fastapi.responses import Response, JSONResponse
 from fastapi.templating import Jinja2Templates
+from contextlib import asynccontextmanager
 import csv
 from starlette.responses import FileResponse
 from io import StringIO
 from Bio import SeqIO
-from choppy.homology_finder import process_background_sequences, process_query_sequences, find_non_homologous_regions, create_annotated_record
+from choppy.homology_finder import process_background_sequences, process_query_sequences, find_non_homologous_regions, create_annotated_record, load_trie
 from choppy.fragment_annotator import annotate_fragments, FragmentConfig
 import base64
+from pathlib import Path
 
-app = FastAPI(root_path="/choppy")
+trie_cache = {}
+kmer_sizes = {}
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    with open("data/data_list.csv", "r") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            full_path = "data/" + row["file_name"]
+            if Path(full_path).exists():
+                kmer_sizes[row["id"]] = int(row["kmer_size"])
+                trie_cache[row["id"]] = load_trie(full_path)
+
+    yield
+    trie_cache.clear()
+    kmer_sizes.clear()
+
+app = FastAPI(root_path="/choppy", lifespan=lifespan)
 templates = Jinja2Templates(directory="server/static")
 @app.get("/")
 async def read_root(request: Request):
@@ -18,72 +37,17 @@ async def read_root(request: Request):
         bgs = [row for row in reader]
     return templates.TemplateResponse("index.html", {"request": request, "bgs": bgs})
 
-@app.post("/annotate-homology")
-async def annotate_homology_endpoint(
-    query_file: UploadFile = File(...),
-    background_files: list[UploadFile] = File(default=[]),
-    kmer_size: int = Form(20),
-    threshold: int = Form(60),
-):
-    print(f"Query file: {query_file.filename}")
-    print(f"Background files: {[f.filename for f in background_files]}")
-    print(f"K-mer size: {kmer_size}, Threshold: {threshold}")
-
-    # Read query file - decode to text for GenBank format
-    query_content = await query_file.read()
-    query_text = query_content.decode('utf-8')
-    query_io = StringIO(query_text)
-    query_sequences = list(SeqIO.parse(query_io, "genbank"))
-
-    background_ios = []
-    background_sequences = []
-    for bg_file in background_files:
-        bg_content = await bg_file.read()
-        format_type = "fasta" if bg_file.filename.endswith((".fa", ".fasta")) else "genbank"
-        bg_text = bg_content.decode('utf-8')
-        bg_io = StringIO(bg_text)        
-        background_sequences.extend(list(SeqIO.parse(bg_io, format_type)))
-
-    print(f"Processing with {len(background_ios)} background sequences...")
-
-    bg_trie = process_background_sequences(background_sequences, kmer_size)
-    query_tries = process_query_sequences(query_sequences, kmer_size)
-    output_records = []
-    for query_seq in query_sequences:
-        regions = find_non_homologous_regions(
-            query_seq, query_tries[query_seq.id], bg_trie, kmer_size, threshold
-        )
-        output_record = create_annotated_record(query_seq, regions)
-        output_records.append(output_record)
-
-    output_format = "genbank"
-    filename = "annotated_sequences.gb"
-
-    print(f"Annotation complete, preparing response...")
-
-    output_io = StringIO()
-    SeqIO.write(output_records, output_io, output_format)
-    output_content = output_io.getvalue()
-
-    return Response(
-        content=output_content,
-        media_type="application/octet-stream",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
-
-
 @app.post("/process-and-fragment")
 async def process_and_fragment_endpoint(
     query_file: UploadFile = File(...),
-    background_files: list[UploadFile] = File(default=[]),
-    kmer_size: int = Form(20),
-    threshold: int = Form(60),
+    custom_background_files: list[UploadFile] = File(default=[]),
     min_size: int = Form(500),
     max_size: int = Form(3000),
     min_overlap: int = Form(60),
     max_overlap: int = Form(100),
     boundary_motif: str = Form(""),
     min_step: int = Form(10),
+    precalculated_bgs: str = Form("")
 ):
     """
     Combined endpoint that:
@@ -92,11 +56,14 @@ async def process_and_fragment_endpoint(
     Returns both the annotated GenBank file and fragments FASTA file as JSON
     """
     print(f"Query file: {query_file.filename}")
-    print(f"Background files: {[f.filename for f in background_files]}")
-    print(f"Homology params - K-mer: {kmer_size}, Threshold: {threshold}")
+    print(f"Background files: {[f.filename for f in custom_background_files]}")
     print(f"Fragment params - Size: {min_size}-{max_size}, Overlap: {min_overlap}-{max_overlap}")
     print(f"Boundary motif: {boundary_motif or 'None'}, Min step: {min_step}")
-    
+    print(f"Precalculated backgrounds: {precalculated_bgs}")
+
+    #temporary
+    kmer_size = 15
+    threshold = 60
     try:
         query_content = await query_file.read()
         query_text = query_content.decode('utf-8')
@@ -106,22 +73,26 @@ async def process_and_fragment_endpoint(
         query_sequences = list(SeqIO.parse(query_io, query_format))
         
         background_sequences = []
-        for bg_file in background_files:
+        for bg_file in custom_background_files:
             bg_content = await bg_file.read()
             format_type = "fasta" if bg_file.filename.endswith((".fa", ".fasta")) else "genbank"
             bg_text = bg_content.decode('utf-8')
             bg_io = StringIO(bg_text)
             background_sequences.extend(list(SeqIO.parse(bg_io, format_type)))
+                
+        bg_tries = process_background_sequences(background_sequences, kmer_size, merge=False)
+        for bg_id in precalculated_bgs.split(","):
+            if bg_id in trie_cache:
+                bg_tries.append(trie_cache[bg_id])
         
-        print(f"Processing {len(query_sequences)} query sequence(s) with {len(background_sequences)} background sequence(s)...")
-        
-        bg_trie = process_background_sequences(background_sequences, kmer_size)
         query_tries = process_query_sequences(query_sequences, kmer_size)
+
+        print(f"Processing {len(query_sequences)} query sequence(s) with {len(bg_tries)} background sequence(s)...")
         annotated_records = []
         
         for query_seq in query_sequences:
             regions = find_non_homologous_regions(
-                query_seq, query_tries[query_seq.id], bg_trie, kmer_size, threshold
+                query_seq, query_tries[query_seq.id], bg_tries, kmer_size, threshold
             )
             annotated_record = create_annotated_record(query_seq, regions)
             annotated_records.append(annotated_record)
@@ -129,7 +100,6 @@ async def process_and_fragment_endpoint(
         print("Homology annotation complete!")
         
         # For the time being, it is assumed that only one query sequence is processed
-
         print("Running fragmentor (placeholder)...")
         
         config = FragmentConfig(

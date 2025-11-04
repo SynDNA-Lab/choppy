@@ -46,7 +46,7 @@
                     </label>
                     <div class="file has-name is-fullwidth">
                         <label class="file-label">
-                            <input class="file-input" type="file" name="background_files" accept=".gb,.gbk,.genbank,.fa,.fasta" multiple/>
+                            <input id="backgroundFilesInput" class="file-input" type="file" name="background_files" accept=".gb,.gbk,.genbank,.fa,.fasta" multiple/>
                             <span class="file-cta">
                                 <span class="file-icon">
                                     <i class="fas fa-upload"></i>
@@ -61,68 +61,18 @@
                         <div class="box" style="max-height: 150px; overflow-y: auto;">
                             {% for bg in bgs %}
                             <label class="checkbox">
-                                <input type="checkbox" name="data_item" value="{{ bg.id }}">
+                                <input type="checkbox" name="precalculated_bgs" value="{{bg.id}}">
                                 <i>{{ bg.species }}</i> ({{ bg.assembly }}) - K-mer Size: {{ bg.kmer_size }}
                             </label>
                             <br>
                             {% endfor %}
                         </div>
                     </div>
-                   <div class="field is-grouped">
-                        <p class="control">
-                            <button id="processButton" class="button is-primary" type="button">
-                                <span class="icon">
-                                    <i class="fas fa-play"></i>
-                                </span>
-                                <span>Run</span>
-                            </button>
-                        </p>
-                        <p class="control">
-                            <button class="button is-link disabled" type="button" disabled>
-                                <span class="icon">
-                                    <i class="fas fa-download"></i>
-                                </span>
-                                <span>Download Background</span>
-                            </button>
-                        </p>
-                    </div>                    
                 </div>
             </div>
         </div>
         <div class="fixed-grid">
             <div class="grid">
-                <div class="grid-item">
-                    <h5 class="title is-5">
-                        Parameters for the homology finder
-                        <span class="icon has-text-info" style="cursor: pointer;" onclick="openModal('homologyParamsModal')">
-                            <i class="fas fa-info-circle"></i>
-                        </span>
-                    </h5>
-                    <div class="field is-horizontal">
-                        <div class="field-label is-normal">
-                            <label class="label">K-mer Size</label>
-                        </div>
-                        <div class="field-body">
-                            <div class="field">
-                                <div class="control">
-                                    <input class="input" type="number" name="kmer_size" value="20" min="1">
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="field is-horizontal">
-                        <div class="field-label is-normal">
-                            <label class="label">Threshold</label>
-                        </div>
-                        <div class="field-body">
-                            <div class="field">
-                                <div class="control">
-                                    <input class="input" type="number" name="threshold" value="60" min="1">
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
                 <div class="grid-item">
                     <h5 class="title is-5">
                         Parameters for the fragmentor
@@ -204,6 +154,16 @@
                         </div>
                     </div>
                 </div>
+                <div class="grid-item">
+                    <p class="control">
+                        <button id="processButton" class="button is-primary" type="button">
+                            <span class="icon">
+                                <i class="fas fa-play"></i>
+                            </span>
+                            <span>Run</span>
+                        </button>
+                    </p>
+                </div>
             </div>
         </div>
     </section>
@@ -245,34 +205,18 @@
         </header>
         <section class="modal-card-body">
             <div class="content">
-                <p>Upload one or more backgroud sequences files in the following formats:</p>
+                <p>Select one of the precalculated backgrounds and/or provide your own sequence in the following formats:</p>
                 <p><strong>Supported formats:</strong></p>
                 <ul>
                     <li>FASTA format</li>
                     <li>GenBank format</li>
                 </ul>
                 <p>Motifs from these sequences will be avoided in the overlapping areas of the generated fragments.</p>
-            </div>
-        </section>
-    </div>
-</div>
-<div id="homologyParamsModal" class="modal">
-    <div class="modal-background" onclick="closeModal('homologyParamsModal')"></div>
-    <div class="modal-card">
-        <header class="modal-card-head">
-            <p class="modal-card-title">Homology Parameters</p>
-            <button class="delete" aria-label="close" onclick="closeModal('homologyParamsModal')"></button>
-        </header>
-        <section class="modal-card-body">
-            <div class="content">
-                <p>Choppy makes sure that the overlapping regions of the fragments are not present in the background. 
-                    To this end, the overlapping regions are allowed only in the so called non-homologous regions. These
-                    parameters control how these regions are defined.
+                <p>
+                    <strong>Note:</strong> For technical reasons, we now allow only short sequences 
+                    (e.g., plasmids) as background files. Large genomes are provided as precalculated backgrounds.
+                    To add other genomes, please contact the developers.
                 </p>
-                <p><strong>K-mer Size:</strong> The size of the k-mers used to identify non-homologous regions. 
-                    A region can be called non-homologous only if it doesn't share any kmers with the backgroud sequences.</p>
-                <p><strong>Threshold:</strong> The minimum length of a region that will be annotated as a non-homologous.
-                Use it to avoid cluttering the annotation with the regions that are too short to contain a valid overlap.</p>
             </div>
         </section>
     </div>
@@ -321,7 +265,6 @@ function validateSequence(sequence) {
 }
 
 function validateMotif(motif) {
-    // Only ATCG allowed, no spaces or other characters
     const validPattern = /^[ATCGatcg]*$/;
     return validPattern.test(motif);
 }
@@ -332,21 +275,17 @@ const queryFileInput = document.getElementById('queryFileInput');
 const queryFileName = document.getElementById('queryFileName');
 const boundaryMotifInput = document.getElementById('boundaryMotif');
 const motifError = document.getElementById('motifError');
-
-// Handle background files display
-const backgroundFilesInput = document.querySelector('input[name="background_files"]');
+const backgroundFilesInput = document.getElementById('backgroundFilesInput');
 const backgroundFileNames = document.getElementById('backgroundFileNames');
 
-if (backgroundFilesInput) {
-    backgroundFilesInput.addEventListener('change', function() {
-        if (this.files.length > 0) {
-            const fileNames = Array.from(this.files).map(f => f.name).join(', ');
-            backgroundFileNames.textContent = `${this.files.length} file(s): ${fileNames}`;
-        } else {
-            backgroundFileNames.textContent = 'No files selected';
-        }
-    });
-}
+backgroundFilesInput.addEventListener('change', function() {
+    if (this.files.length > 0) {
+        const fileNames = Array.from(this.files).map(f => f.name).join(', ');
+        backgroundFileNames.textContent = `${this.files.length} file(s): ${fileNames}`;
+    } else {
+        backgroundFileNames.textContent = 'No files selected';
+    }
+});
 
 queryFileInput.addEventListener('change', function() {
     if (this.files.length > 0) {
@@ -365,7 +304,6 @@ queryFileInput.addEventListener('change', function() {
 querySequenceTextarea.addEventListener('input', function() {
     const value = this.value;
     
-    // Validation
     if (value.length === 0) {
         this.classList.remove('is-danger');
         sequenceError.style.display = 'none';
@@ -384,16 +322,13 @@ boundaryMotifInput.addEventListener('input', function() {
     const value = this.value;
     
     if (value.length === 0) {
-        // Empty is okay (optional field)
         this.classList.remove('is-danger');
         motifError.style.display = 'none';
     } else if (!validateMotif(value)) {
-        // Invalid characters found
         this.classList.add('is-danger');
         motifError.textContent = 'Invalid characters detected. Only A, T, C, G are allowed.';
         motifError.style.display = 'block';
     } else {
-        // Valid motif
         this.classList.remove('is-danger');
         motifError.style.display = 'none';
     }
@@ -403,11 +338,9 @@ boundaryMotifInput.addEventListener('input', function() {
 function openModal(modalId) {
     document.getElementById(modalId).classList.add('is-active');
 }
-
 function closeModal(modalId) {
     document.getElementById(modalId).classList.remove('is-active');
 }
-
 // Close modal when pressing ESC key
 document.addEventListener('keydown', function(event) {
     if (event.key === 'Escape') {
@@ -423,7 +356,6 @@ document.getElementById('processButton').addEventListener('click', async () => {
     try {
         const queryText = querySequenceTextarea.value.trim();
         const queryFile = queryFileInput.files[0];
-        const backgroundFilesInput = document.querySelector('input[name="background_files"]');
         const backgroundFiles = backgroundFilesInput ? backgroundFilesInput.files : [];
         
         if (!queryText && !queryFile) {
@@ -450,14 +382,13 @@ document.getElementById('processButton').addEventListener('click', async () => {
             formData.append('background_files', backgroundFiles[i]);
         }
         
-        formData.append('kmer_size', document.querySelector('input[name="kmer_size"]').value);
-        formData.append('threshold', document.querySelector('input[name="threshold"]').value);
         formData.append('min_size', document.querySelector('input[name="min_size"]').value);
         formData.append('max_size', document.querySelector('input[name="max_size"]').value);
         formData.append('min_overlap', document.querySelector('input[name="min_overlap"]').value);
         formData.append('max_overlap', document.querySelector('input[name="max_overlap"]').value);
         formData.append('boundary_motif', boundaryMotifInput.value);
         formData.append('min_step', document.querySelector('input[name="min_step"]').value);
+        formData.append('precalculated_bgs', Array.from(document.querySelectorAll('input[name="precalculated_bgs"]:checked')).map(cb => cb.value).join(','));
         
         const response = await fetch('./process-and-fragment', {
             method: 'POST',
