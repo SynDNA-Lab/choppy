@@ -56,6 +56,18 @@
                             <span id="backgroundFileNames" class="file-name"> No files selected </span>
                         </label>
                     </div>
+                    <div class="content">
+                        <p class="has-text-weight-semibold">Precalculated backgrounds:</p>
+                        <div class="box" style="max-height: 150px; overflow-y: auto;">
+                            {% for bg in bgs %}
+                            <label class="checkbox">
+                                <input type="checkbox" name="data_item" value="{{ bg.id }}">
+                                <i>{{ bg.species }}</i> ({{ bg.assembly }}) - K-mer Size: {{ bg.kmer_size }}
+                            </label>
+                            <br>
+                            {% endfor %}
+                        </div>
+                    </div>
                    <div class="field is-grouped">
                         <p class="control">
                             <button id="processButton" class="button is-primary" type="button">

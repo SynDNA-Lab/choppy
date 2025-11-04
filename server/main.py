@@ -1,17 +1,22 @@
-from fastapi import FastAPI, File, UploadFile, Form
+from fastapi import FastAPI, File, UploadFile, Form, Request
 from fastapi.responses import Response, JSONResponse
+from fastapi.templating import Jinja2Templates
+import csv
 from starlette.responses import FileResponse
-from io import BytesIO, StringIO
+from io import StringIO
 from Bio import SeqIO
 from choppy.homology_finder import process_background_sequences, process_query_sequences, find_non_homologous_regions, create_annotated_record
 from choppy.fragment_annotator import annotate_fragments, FragmentConfig
 import base64
 
 app = FastAPI(root_path="/choppy")
-
+templates = Jinja2Templates(directory="server/static")
 @app.get("/")
-async def read_root():
-    return FileResponse("server/static/index.html")
+async def read_root(request: Request):
+    with open("data/data_list.csv", "r") as f:
+        reader = csv.DictReader(f)
+        bgs = [row for row in reader]
+    return templates.TemplateResponse("index.html", {"request": request, "bgs": bgs})
 
 @app.post("/annotate-homology")
 async def annotate_homology_endpoint(
@@ -65,6 +70,7 @@ async def annotate_homology_endpoint(
         media_type="application/octet-stream",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
+
 
 @app.post("/process-and-fragment")
 async def process_and_fragment_endpoint(
