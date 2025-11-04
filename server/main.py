@@ -60,10 +60,7 @@ async def process_and_fragment_endpoint(
     print(f"Fragment params - Size: {min_size}-{max_size}, Overlap: {min_overlap}-{max_overlap}")
     print(f"Boundary motif: {boundary_motif or 'None'}, Min step: {min_step}")
     print(f"Precalculated backgrounds: {precalculated_bgs}")
-
-    #temporary
-    kmer_size = 15
-    threshold = 60
+    threshold = min_overlap
     try:
         query_content = await query_file.read()
         query_text = query_content.decode('utf-8')
@@ -79,12 +76,17 @@ async def process_and_fragment_endpoint(
             bg_text = bg_content.decode('utf-8')
             bg_io = StringIO(bg_text)
             background_sequences.extend(list(SeqIO.parse(bg_io, format_type)))
-                
-        bg_tries = process_background_sequences(background_sequences, kmer_size, merge=False)
+
+        bg_tries = []
+        kmer_size = 15
         for bg_id in precalculated_bgs.split(","):
             if bg_id in trie_cache:
                 bg_tries.append(trie_cache[bg_id])
+                kmer_size = kmer_sizes[bg_id] # For now, only one kmer size is available. Later, we need to make sure that user doens't try to mix them.
         
+        custom_bg_tries = process_background_sequences(background_sequences, kmer_size, merge=False)
+        bg_tries.extend(custom_bg_tries)
+
         query_tries = process_query_sequences(query_sequences, kmer_size)
 
         print(f"Processing {len(query_sequences)} query sequence(s) with {len(bg_tries)} background sequence(s)...")
@@ -100,7 +102,7 @@ async def process_and_fragment_endpoint(
         print("Homology annotation complete!")
         
         # For the time being, it is assumed that only one query sequence is processed
-        print("Running fragmentor (placeholder)...")
+        print("Running fragmentor...")
         
         config = FragmentConfig(
             min_size=min_size,
@@ -116,14 +118,12 @@ async def process_and_fragment_endpoint(
         fragments_io = StringIO()
         SeqIO.write(frag_records, fragments_io, "fasta")
         fragments_content = fragments_io.getvalue()
-
         # Write annotated GenBank file
         annotated_io = StringIO()
         SeqIO.write(records, annotated_io, "genbank")
         annotated_content = annotated_io.getvalue()
 
-
-        print("Fragmentation complete (placeholder)!")
+        print("Fragmentation complete!")
         
         annotated_b64 = base64.b64encode(annotated_content.encode('utf-8')).decode('utf-8')
         fragments_b64 = base64.b64encode(fragments_content.encode('utf-8')).decode('utf-8')
