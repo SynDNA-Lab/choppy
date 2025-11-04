@@ -56,6 +56,7 @@
                             <span id="backgroundFileNames" class="file-name"> No files selected </span>
                         </label>
                     </div>
+                    <p id="backgroundFilesError" class="help is-danger" style="display: none;"></p>
                     <div class="content">
                         <p class="has-text-weight-semibold">Precalculated backgrounds:</p>
                         <div class="box" style="max-height: 150px; overflow-y: auto;">
@@ -277,13 +278,36 @@ const boundaryMotifInput = document.getElementById('boundaryMotif');
 const motifError = document.getElementById('motifError');
 const backgroundFilesInput = document.getElementById('backgroundFilesInput');
 const backgroundFileNames = document.getElementById('backgroundFileNames');
+const backgroundFilesError = document.getElementById('backgroundFilesError');
+
+const MAX_BACKGROUND_SIZE_MB = 3;
+const MAX_BACKGROUND_SIZE_BYTES = MAX_BACKGROUND_SIZE_MB * 1024 * 1024;
 
 backgroundFilesInput.addEventListener('change', function() {
     if (this.files.length > 0) {
+        // Calculate total size
+        let totalSize = 0;
+        for (let i = 0; i < this.files.length; i++) {
+            totalSize += this.files[i].size;
+        }
+        
         const fileNames = Array.from(this.files).map(f => f.name).join(', ');
         backgroundFileNames.textContent = `${this.files.length} file(s): ${fileNames}`;
+        
+        // Validate total size
+        if (totalSize > MAX_BACKGROUND_SIZE_BYTES) {
+            const sizeMB = (totalSize / (1024 * 1024)).toFixed(2);
+            backgroundFilesInput.parentElement.parentElement.classList.add('is-danger');
+            backgroundFilesError.textContent = `Total file size (${sizeMB} MB) exceeds the ${MAX_BACKGROUND_SIZE_MB} MB limit.`;
+            backgroundFilesError.style.display = 'block';
+        } else {
+            backgroundFilesInput.parentElement.parentElement.classList.remove('is-danger');
+            backgroundFilesError.style.display = 'none';
+        }
     } else {
         backgroundFileNames.textContent = 'No files selected';
+        backgroundFilesInput.parentElement.parentElement.classList.remove('is-danger');
+        backgroundFilesError.style.display = 'none';
     }
 });
 
@@ -362,7 +386,7 @@ document.getElementById('processButton').addEventListener('click', async () => {
             alert('Please provide a query sequence (either as text or file upload)');
             return;
         }
-        if (sequenceError.style.display !== 'none' || motifError.style.display !== 'none') {
+        if (sequenceError.style.display !== 'none' || motifError.style.display !== 'none' || backgroundFilesError.style.display !== 'none') {
             alert('Please fix validation errors before submitting');
             return;
         }
