@@ -379,7 +379,7 @@ document.getElementById('processButton').addEventListener('click', async () => {
         }
         
         for (let i = 0; i < backgroundFiles.length; i++) {
-            formData.append('background_files', backgroundFiles[i]);
+            formData.append('custom_background_files', backgroundFiles[i]);
         }
         
         formData.append('min_size', document.querySelector('input[name="min_size"]').value);
