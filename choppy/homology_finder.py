@@ -248,7 +248,7 @@ def create_annotated_record(
             type="misc_feature",
             qualifiers={
                 "note": f"Non-homologous region {i + 1}",
-                "label": f"homology_free",
+                "label": ["homology_free"],
             },
         )
         features.append(feature)

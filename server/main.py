@@ -91,11 +91,11 @@ async def process_and_fragment_endpoint(
 
         print(f"Processing {len(query_sequences)} query sequence(s) with {len(bg_tries)} background sequence(s)...")
         annotated_records = []
-        
         for query_seq in query_sequences:
             regions = find_non_homologous_regions(
                 query_seq, query_tries[query_seq.id], bg_tries, kmer_size, threshold
             )
+            print(f"Found {len(regions)} non-homologous regions in sequence {query_seq.id}")
             annotated_record = create_annotated_record(query_seq, regions)
             annotated_records.append(annotated_record)
         
