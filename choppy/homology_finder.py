@@ -5,6 +5,7 @@ from Bio.SeqFeature import SeqFeature, FeatureLocation
 from tqdm import tqdm
 from typing import List, Dict, Union
 import marisa_trie as mt
+import warnings
 
 
 def parse_sequence_files(file_paths: Union[str, List[str]]) -> List[SeqRecord]:
@@ -209,22 +210,79 @@ def find_non_homologous_regions(
         sequence_str = sequence_str + sequence_str[0:kmer_size - 1]
 
     regions = []
-    start = 0
-    opened = False
+    start = None
     for i in tqdm(range(len(sequence_str) - kmer_size + 1), desc="Finding non-homologous regions"):
         kmer = sequence_str[i : i + kmer_size]
         if not check_kmer_in_tries(bg_tries, kmer) and kmer not in query_trie:
-            if not opened:
+            if start is None:
                 start = i
-                opened = True
         else:
-            if opened and i - start + kmer_size - 1 >= threshold:
+            if start is not None and i - start + kmer_size - 1 >= threshold:
                 regions.append((start, i + kmer_size - 1)) 
-            opened = False
-    if opened and len(sequence_str) - start >= threshold:
+            start = None
+    
+    if start is not None and len(sequence_str) - start >= threshold:
         regions.append((start, len(sequence_str)))
 
-    return regions    
+    return regions
+
+def find_local_non_homologous_regions(
+    sequence: SeqRecord,
+    kmer_size: int, threshold: int, neigh_size: int
+) -> list:
+    """
+    Find non-homologous regions in a sequence based on local k-mer uniqueness.
+
+    Args:
+        sequence (SeqRecord): Input query sequence
+        kmer_size (int): Size of k-mers
+        threshold (int): Minimum size of non-homologous regions to report
+        neigh_size (int): Neighborhood size to consider for local uniqueness (i.e., how far apart identical k-mers must be to be considered non-homologous)
+    Returns:
+        List[(int, int)]: List of tuples representing start and end positions of non-homologous regions
+    """
+    
+    sequence_str = str(sequence.seq)
+
+    kmers = dict()
+    total_kmers = len(sequence_str) - kmer_size + 1
+    hom_free = [0] * total_kmers
+
+    i = 0
+    j = 0
+    while j < total_kmers:
+        if i < total_kmers:
+            kmer = sequence_str[i:i + kmer_size]
+            last_pos = kmers.get(kmer)
+            if last_pos is None or i + kmer_size - last_pos > neigh_size:
+                hom_free[i] += 1
+            
+            kmers[kmer] = i
+
+        if i >= neigh_size - kmer_size:
+            kmer = sequence_str[j:j + kmer_size]
+            last_pos = kmers.get(kmer)
+            if last_pos == j:
+                hom_free[j] += 1
+            j += 1
+        
+        i += 1
+
+    regions = []
+    start = None
+    for i, val in enumerate(hom_free):
+        if val == 2:
+            if start is None:
+                start = i
+        else:
+            if start is not None and i - start + kmer_size - 1 >= threshold:
+                regions.append((start, i + kmer_size - 1))
+            start = None
+
+    if start is not None and len(hom_free) - start >= threshold:
+        regions.append((start, len(hom_free) + kmer_size - 1))        
+
+    return regions
 
 def create_annotated_record(
     sequence: SeqRecord, regions: list, label: str = "homology_free"

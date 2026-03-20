@@ -11,7 +11,8 @@ from choppy.homology_finder import (
     process_query_sequences,
     find_non_homologous_regions,
     save_trie,
-    load_trie
+    load_trie,
+    find_local_non_homologous_regions
 )
 import marisa_trie as mt
 from Bio.SeqRecord import SeqRecord
@@ -146,6 +147,24 @@ def test_find_non_homologous_regions():
     regions = find_non_homologous_regions(query_seq, query_trie, bg_trie, kmer_size=5, threshold=6)
     assert len(regions) == 1, "Only one region meets the higher threshold"
     assert regions[0] == (19, 26), "Only the last region meets the higher threshold"
+
+def test_find_local_non_homologous_regions():
+    """Test finding local non-homologous regions."""
+    
+    seq = SeqRecord(Seq("AAAAAAAAAAAAAAAAAAAA"), id="test_repeats")
+    regions = find_local_non_homologous_regions(seq, kmer_size=4, threshold=1, neigh_size=4)
+    assert len(regions) == 1, "Neighbourhood is too small, the whole sequence should be non-homologous"
+    assert regions[0] == (0, len(seq.seq)), "The whole sequence should be non-homologous"
+
+    seq = SeqRecord(Seq("ATGCATGCATGCATGC"), id="test_repeats")
+    regions = find_local_non_homologous_regions(seq, kmer_size=4, threshold=4, neigh_size=8)
+    assert len(regions) == 0, "Should find no non-homologous regions due to repeats"
+
+    seq_no_repeats = SeqRecord(Seq("ACGTGCATCGTAGCTA"), id="test_unique")
+    regions = find_local_non_homologous_regions(seq_no_repeats, kmer_size=4, threshold=5, neigh_size=5)
+    assert len(regions) == 1, "The whole sequence is non-homologous"
+    assert regions[0] == (0, len(seq.seq)), "The whole sequence should be non-homologous"
+
 
 def test_process_background_sequences_merged():
     """Test processing background sequences with merge=True."""
