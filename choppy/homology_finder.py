@@ -286,6 +286,41 @@ def find_local_non_homologous_regions(
 
     return regions
 
+def get_region_intersects(
+        list1: List[tuple], list2: List[tuple], threshold: int
+) -> List[tuple]:
+    """
+    Get intersecting regions between two lists of regions, considering a minimum overlap threshold.
+
+    Args:
+        list1 (List[(int, int)]): First list of regions (start, end)
+        list2 (List[(int, int)]): Second list of regions (start, end)
+        threshold (int): Minimum overlap length to consider as an intersection
+    Returns:
+        List[(int, int)]: List of intersecting regions (start, end) that meet the threshold
+    """
+
+    intersects = []
+    
+    j_start = 0
+    for start1, end1 in list1:
+        while j_start < len(list2) and list2[j_start][1] <= start1:
+            j_start += 1
+            
+        for j in range(j_start, len(list2)):
+            start2, end2 = list2[j]
+            
+            if start2 >= end1:
+                break
+            
+            max_start = max(start1, start2)
+            min_end = min(end1, end2)
+            
+            if max_start < min_end and (min_end - max_start) >= threshold:
+                intersects.append((max_start, min_end))
+                
+    return intersects
+
 def create_annotated_record(
     sequence: SeqRecord, regions: list, label: str = "homology_free"
 ) -> SeqRecord:

@@ -246,3 +246,16 @@ def test_save_and_load_trie(tmp_path):
     original_kmers = set(original_trie.keys())
     loaded_kmers = set(loaded_trie.keys())
     assert original_kmers == loaded_kmers, "Loaded trie should contain exactly the same k-mers as original"
+
+def test_region_intersects():
+    """Test the get_region_intersects function."""
+    from choppy.homology_finder import get_region_intersects
+    
+    list1 = [(0, 15), (20, 30), (25, 60)]
+    list2 = [(0, 20), (25, 35), (45, 65)]
+    threshold = 11
+    
+    intersects = get_region_intersects(list1, list2, threshold)
+    
+    expected_intersects = [(0, 15), (45, 60)]
+    assert intersects == expected_intersects, f"Expected intersects {expected_intersects}, got {intersects}"
