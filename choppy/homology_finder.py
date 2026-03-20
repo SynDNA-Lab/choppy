@@ -227,14 +227,15 @@ def find_non_homologous_regions(
     return regions    
 
 def create_annotated_record(
-    sequence: SeqRecord, regions: list
+    sequence: SeqRecord, regions: list, label: str = "homology_free"
 ) -> SeqRecord:
     """
     Create an annotated sequence record with non-homologous regions.
 
     Args:
         sequence (SeqRecord): Input sequence record
-        regions (dict): Dictionary of non-homologous regions
+        regions (list): List of tuples representing start and end positions of non-homologous regions
+        label (str): Label for the non-homologous regions
 
     Returns:
         SeqRecord: Annotated sequence record
@@ -248,7 +249,7 @@ def create_annotated_record(
             type="misc_feature",
             qualifiers={
                 "note": f"Non-homologous region {i + 1}",
-                "label": ["homology_free"],
+                "label": [label],
             },
         )
         features.append(feature)

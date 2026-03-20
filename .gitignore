@@ -210,3 +210,6 @@ marimo/_lsp/
 __marimo__/
 
 .vscode/
+
+sandbox/castles.py
+sandbox/data/4TAR-castles-Re20k_new.gb
