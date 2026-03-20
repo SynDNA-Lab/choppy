@@ -243,7 +243,8 @@ def find_local_non_homologous_regions(
     """
     
     sequence_str = str(sequence.seq)
-
+    sequence_rc_str = str(sequence.seq.reverse_complement())
+    
     kmers = dict()
     total_kmers = len(sequence_str) - kmer_size + 1
     hom_free = [0] * total_kmers
@@ -258,6 +259,7 @@ def find_local_non_homologous_regions(
                 hom_free[i] += 1
             
             kmers[kmer] = i
+            kmers[sequence_rc_str[i:i + kmer_size]] = i
 
         if i >= neigh_size - kmer_size:
             kmer = sequence_str[j:j + kmer_size]
