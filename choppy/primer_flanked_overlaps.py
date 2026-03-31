@@ -8,13 +8,15 @@ get_poly_x_pattern = lambda max_poly_x_length: re.compile(
     r'|G{' + str(max_poly_x_length + 1) + r',}'
     r'|C{' + str(max_poly_x_length + 1) + r',})'
 )
+def reverse_complement(seq):
+    return seq[::-1].translate(str.maketrans('ATGC', 'TACG'))
 
 def check_primer(
     primer, poly_x_pattern=None, poly_x_max_length=4,
     min_gc=0.3, max_gc=0.7, 
     min_tm=57, max_tm=62, 
     max_hairpin_tm=24, max_homodimer_tm=45, 
-    max_3_self_tm=35.0
+    max_3_self_tm=35.0, five_prime_clamp_pattern=None
 ):
     """ 
     Checks if a primer sequence meets certain criteria (checked in the order listed):
@@ -24,6 +26,7 @@ def check_primer(
     - Hairpin Tm below max_hairpin_tm
     - Homodimer Tm below max_homodimer_tm
     - 3' self-complementarity Tm below max_3_self_tm
+    - (optional) Presence of a 5' clamp sequence matching five_prime_clamp_pattern
     
     Returns a tuple (is_valid, gc_content, tm) where:
     - is_valid: True if the primer meets all criteria, False otherwise
@@ -48,12 +51,15 @@ def check_primer(
         return False, gc_content, mt
     if primer3.calc_end_stability(primer, primer).tm > max_3_self_tm:
         return False, gc_content, mt
+    if five_prime_clamp_pattern is not None and not re.search(five_prime_clamp_pattern, primer):
+        return False, gc_content, mt
     return True, gc_content, mt
 
 def find_forward_primers(seq, allowed_regions, clamp_pattern, clamp_length,
                          max_length = 23, min_length = 18, max_poly_x_length=4,
                          min_gc=0.3, max_gc=0.7, min_tm=57, max_tm=62,
-                         max_hairpin_tm=24, max_homodimer_tm=45, max_3_self_tm=35.0):
+                         max_hairpin_tm=24, max_homodimer_tm=45, max_3_self_tm=35.0, 
+                         five_prime_clamp_pattern=None):
     """
     Finds candidate forward primers in the given sequence that meet specified criteria.
     - seq: The input DNA sequence to search for primers.
@@ -98,7 +104,8 @@ def find_forward_primers(seq, allowed_regions, clamp_pattern, clamp_length,
                     min_tm=min_tm, max_tm=max_tm,
                     max_hairpin_tm=max_hairpin_tm,
                     max_homodimer_tm=max_homodimer_tm,
-                    max_3_self_tm=max_3_self_tm)
+                    max_3_self_tm=max_3_self_tm,
+                    five_prime_clamp_pattern=five_prime_clamp_pattern)
                 if not valid:
                     continue
                 forward_candidates.append({
@@ -111,7 +118,8 @@ def find_forward_primers(seq, allowed_regions, clamp_pattern, clamp_length,
 def find_reverse_primers(seq, allowed_regions, clamp_pattern, clamp_length,
                          max_length = 23, min_length = 18, max_poly_x_length=4,
                          min_gc=0.3, max_gc=0.7, min_tm=57, max_tm=62,
-                         max_hairpin_tm=24, max_homodimer_tm=45, max_3_self_tm=35.0):
+                         max_hairpin_tm=24, max_homodimer_tm=45, max_3_self_tm=35.0,
+                         five_prime_clamp_pattern=None):
     """
     Finds candidate reverse primers in the given sequence that meet specified criteria.
     - seq: The input DNA sequence to search for primers.
@@ -133,6 +141,8 @@ def find_reverse_primers(seq, allowed_regions, clamp_pattern, clamp_length,
     - max_homodimer_tm: The maximum allowed homodimer Tm of the primer.
     - max_3_self_tm: The maximum allowed 3' self-complementarity Tm of the
       primer.
+    - five_prime_clamp_pattern: An optional regex pattern that identifies the
+      5' clamp sequence in the primers.
 
     Returns a list of candidate primers that meet the specified criteria, where
     each candidate is a dictionary with keys 'seq', 'gc_content', 'tm', and
@@ -156,7 +166,8 @@ def find_reverse_primers(seq, allowed_regions, clamp_pattern, clamp_length,
                     min_tm=min_tm, max_tm=max_tm,
                     max_hairpin_tm=max_hairpin_tm,
                     max_homodimer_tm=max_homodimer_tm,
-                    max_3_self_tm=max_3_self_tm)
+                    max_3_self_tm=max_3_self_tm,
+                    five_prime_clamp_pattern=five_prime_clamp_pattern)
                 if not valid:
                     continue
                 reverse_candidates.append({
@@ -210,31 +221,34 @@ def get_primer_overlaps(forward_primers, reverse_primers, min_overlap=60, max_ov
     
     return possible_overlaps
 
-def get_primer_overlaps_from_seq(seq, allowed_regions, clamp_pattern, clamp_length,
+def get_primer_overlaps_from_seq(seq, allowed_regions, clamp_pattern_forward, clamp_pattern_reverse, clamp_length,
                                  min_length=18, max_length=23, max_poly_x_length=4,
                                  min_gc=0.3, max_gc=0.7, min_tm=57, max_tm=62,
                                  max_hairpin_tm=24, max_homodimer_tm=45, max_3_self_tm=35.0,
-                                 min_overlap=60, max_overlap=100, max_heterodimer_tm=45.0):
+                                 min_overlap=60, max_overlap=100, max_heterodimer_tm=45.0,
+                                 five_prime_clamp_pattern=None):
     """
     A convenience function that takes a sequence and parameters for primer design and overlap criteria, and returns possible primer overlaps.
     """
-    forward_primers = find_forward_primers(seq, allowed_regions, clamp_pattern, clamp_length,
+    forward_primers = find_forward_primers(seq, allowed_regions, clamp_pattern_forward, clamp_length,
                                            min_length=min_length, max_length=max_length,
                                            max_poly_x_length=max_poly_x_length,
                                            min_gc=min_gc, max_gc=max_gc,
                                            min_tm=min_tm, max_tm=max_tm,
                                            max_hairpin_tm=max_hairpin_tm,
                                            max_homodimer_tm=max_homodimer_tm,
-                                           max_3_self_tm=max_3_self_tm)
+                                           max_3_self_tm=max_3_self_tm,
+                                           five_prime_clamp_pattern=five_prime_clamp_pattern)
     
-    reverse_primers = find_reverse_primers(seq, allowed_regions, clamp_pattern, clamp_length,
+    reverse_primers = find_reverse_primers(seq, allowed_regions, clamp_pattern_reverse, clamp_length,
                                            min_length=min_length, max_length=max_length,
                                            max_poly_x_length=max_poly_x_length,
                                            min_gc=min_gc, max_gc=max_gc,
                                            min_tm=min_tm, max_tm=max_tm,
                                            max_hairpin_tm=max_hairpin_tm,
                                            max_homodimer_tm=max_homodimer_tm,
-                                           max_3_self_tm=max_3_self_tm)
+                                           max_3_self_tm=max_3_self_tm,
+                                           five_prime_clamp_pattern=five_prime_clamp_pattern)
     
     possible_overlaps = get_primer_overlaps(forward_primers, reverse_primers,
                                             min_overlap=min_overlap, 

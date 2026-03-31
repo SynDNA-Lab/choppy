@@ -1,6 +1,7 @@
 # %%
 from Bio import SeqIO
-from choppy.homology_finder import load_trie, create_kmer_trie, merge_tries, find_non_homologous_regions, find_local_non_homologous_regions
+from choppy.homology_finder import load_trie, create_kmer_trie, merge_tries, find_non_homologous_regions, find_local_non_homologous_regions, get_region_intersects
+from choppy.primer_flanked_overlaps import get_primer_overlaps_from_seq
 import re
 import primer3
 import matplotlib.pyplot as plt
@@ -36,34 +37,25 @@ for seq in sequences:
     local_neigh_regions[seq.id] = find_local_non_homologous_regions(seq, kmer_size, threshold, neighbourhood_size)
 
 # %%
-def get_region_intersects(list1, list2, threshold):
-    intersects = []
-    
-    j_start = 0
-    for start1, end1 in list1:
-        while j_start < len(list2) and list2[j_start][1] <= start1:
-            j_start += 1
-            
-        for j in range(j_start, len(list2)):
-            start2, end2 = list2[j]
-            
-            if start2 >= end1:
-                break
-            
-            max_start = max(start1, start2)
-            min_end = min(end1, end2)
-            
-            if max_start < min_end and (min_end - max_start) >= threshold:
-                intersects.append((max_start, min_end))
-                
-    return intersects
-
 local_bg_intersects = get_region_intersects(local_neigh_regions['seq_0'], bg_regions['seq_0'], threshold)
 # primers should be inside valid overlap regions
 
 primer_candidate_regions = {}
 for seq in sequences:
     primer_candidate_regions[seq.id] = get_region_intersects(full_seq_regions[seq.id], local_neigh_regions[seq.id], pr_threshold)
+
+# %%
+primer_flanked_overlaps = {}
+
+gc_clamp_pattern_forward = re.compile(r'[GC][AT][GC]|[AT][GC][GC]')
+gc_clamp_pattern_reverse = re.compile(r'[GC][AT][GC]|[GC][GC][AT]')
+
+for seq in sequences:
+    print(seq.id)
+    primer_flanked_overlaps[seq.id] = get_primer_overlaps_from_seq(str(seq.seq), primer_candidate_regions[seq.id], 
+                                                                   gc_clamp_pattern_forward, gc_clamp_pattern_reverse, 3,
+                                                                   five_prime_clamp_pattern=re.compile(r'[GC]'))
+
 
 # %%
 # default primer 3 parameters
@@ -104,7 +96,7 @@ def check_primer(
 ):
     if poly_x_pattern is None:
         poly_x_pattern = re.compile(r'(A{' + str(poly_x_max_length + 1) + r',}|T{' + str(poly_x_max_length + 1) + r',}|G{' + str(poly_x_max_length + 1) + r',}|C{' + str(poly_x_max_length + 1) + r',})')
-        
+
     if re.search(poly_x_pattern, primer):
         return False, None, None
     gc_content  = calc_gc_content(primer)
