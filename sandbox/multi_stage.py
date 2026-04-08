@@ -31,7 +31,9 @@ if kmer_size != primer_kmer_size:
 
 # %%
 threshold = 50
-pr_threshold = 17
+min_primer_length = 17
+max_primer_length = 23
+pr_threshold = min_primer_length
 neighbourhood_size = 5500
 
 bg_regions = {}
@@ -60,7 +62,8 @@ for seq in sequences:
     print(seq.id)
     primer_flanked_overlaps[seq.id] = get_primer_overlaps_from_seq(str(seq.seq), primer_candidate_regions[seq.id], 
                                                                    gc_clamp_pattern_forward, gc_clamp_pattern_reverse, 3,
-                                                                   five_prime_clamp_pattern=re.compile(r'[GC]'), min_overlap=50)
+                                                                   five_prime_clamp_pattern=re.compile(r'[GC]'), min_overlap=50, 
+                                                                   min_length=min_primer_length, max_length=max_primer_length)
 
 # %%
 min_step = 50
@@ -81,8 +84,91 @@ for seq in sequences:
             cur_overlaps.append((end - max_overlap, end))
     segment_overlaps[seq.id] = sorted(cur_overlaps, key=lambda x: x[0])
 
+# %%
+def get_edge_penalty(left_ov, right_ov, 
+                     opt_primer_len, max_primer_len_diff, 
+                     opt_overlap_len, max_overlap_len_diff, 
+                     max_tm_diff=5.0):
+    penalty = 0.0
+    if left_ov['type'] == 'fr' and right_ov['type'] == 'fr':
+        tm_diff = abs(left_ov['tm_left'] - right_ov['tm_right'])
+        penalty += tm_diff / max_tm_diff * 0.1
+    
+    if left_ov['type'] == 'fr':
+        primer_len_diff = abs(left_ov['pr_left_len'] - opt_primer_len)
+        penalty += primer_len_diff / max_primer_len_diff * 0.1
+    if right_ov['type'] == 'fr':
+        primer_len_diff = abs(right_ov['pr_right_len'] - opt_primer_len)
+        penalty += primer_len_diff / max_primer_len_diff * 0.1
+    
+    left_overlap_len = left_ov['pos'][1] - left_ov['pos'][0]
+    right_overlap_len = right_ov['pos'][1] - right_ov['pos'][0]
+    penalty += abs(left_overlap_len - opt_overlap_len) / max_overlap_len_diff * 0.1
+    penalty += abs(right_overlap_len - opt_overlap_len) / max_overlap_len_diff * 0.1
+
+    return penalty
+
+def add_vertex(G, ov, overlap_list=None):
+    if not G.has_node(ov['pos']):
+        if ov['type'] == 'seg':
+            G.add_node(ov['pos'], type=ov['type'], pos=ov['pos'])
+        if ov['type'] == 'fr':
+            G.add_node(ov['pos'], type=ov['type'], pos=ov['pos'],
+                       pr_left_len=len(overlap_list[ov['pr_ind']]['forward']['seq']), 
+                       pr_right_len=len(overlap_list[ov['pr_ind']]['reverse']['seq']), 
+                       tm_left=overlap_list[ov['pr_ind']]['forward']['tm'], 
+                       tm_right=overlap_list[ov['pr_ind']]['reverse']['tm'])
 
 # %%
+seq_id = sequences[0].id
+
+G = nx.DiGraph()
+
+min_length = 300
+max_length = 1800
+
+opt_primer_len = (max_primer_length + min_primer_length) / 2
+max_primer_len_diff = max_primer_length - min_primer_length
+
+all_overlaps = (
+    [{'pos': ov, 'type': 'seg'} for ov in segment_overlaps[seq_id]] +
+    [{'pos': (ov['overlap_start'], ov['overlap_end']), 'type': 'fr', 'pr_ind': i} for i, ov in enumerate(primer_flanked_overlaps[seq_id])] +
+    [{'pos': (-100, 0), 'type': 'seg'}, 
+     {'pos': (len(str(sequences[0].seq)), len(str(sequences[0].seq)) + 100), 'type': 'seg'}]
+)
+all_overlaps = sorted(all_overlaps, key=lambda x: x['pos'][0])
+
+for i, ov in enumerate(all_overlaps):
+    add_vertex(G, ov, primer_flanked_overlaps[seq_id])
+    j = i + 1
+    too_far = False
+    allow_seg = ov['type'] == 'fr'
+    while j < len(all_overlaps) and not too_far:
+        next_ov = all_overlaps[j]
+        if next_ov['pos'][0] - ov['pos'][0] > max_length:
+            too_far = True
+            continue
+        length = next_ov['pos'][1] - ov['pos'][0]
+        if min_length <= length <= max_length and (allow_seg or next_ov['type'] == 'fr'):
+            add_vertex(G, next_ov, primer_flanked_overlaps[seq_id])
+            G.add_edge(ov['pos'], next_ov['pos'], 
+                       weight=1 + get_edge_penalty(G.nodes[ov['pos']], G.nodes[next_ov['pos']], 
+                                                   opt_primer_len, max_primer_len_diff, 
+                                                   max_overlap, max_overlap - min_overlap))
+        j += 1
+
+# %%
+num_nodes = G.number_of_nodes()
+print(f"Number of vertices: {num_nodes}")
+
+num_edges = G.number_of_edges()
+print(f"Number of edges: {num_edges}")
+
+avg_in_degree = G.number_of_edges() / G.number_of_nodes()
+avg_total_degree = (2 * G.number_of_edges()) / G.number_of_nodes()
+
+print(f"Average In/Out Degree: {avg_in_degree}")
+print(f"Average Total Degree: {avg_total_degree}")
 
 # %%
 # default primer 3 parameters
