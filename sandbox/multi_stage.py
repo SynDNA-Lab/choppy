@@ -5,25 +5,33 @@ from choppy.primer_flanked_overlaps import get_primer_overlaps_from_seq
 import re
 import primer3
 import matplotlib.pyplot as plt
-
+import networkx as nx
 # %%
 sequences = list(SeqIO.parse("data/random_seqs_50k.fa", "fasta"))
 
 test_seq = str(sequences[0].seq)
 kmer_size = 15
+primer_kmer_size = 10
 bg_trie = load_trie("../data/S_cerevisiae-R64-GCA_000146045_cat_15.marisa")
 seq_tries = {}
 
 for seq in sequences:
     print(f"Processing {seq.id}...")
-    trie = create_kmer_trie(seq, kmer_size, bg=False)
+    trie = create_kmer_trie(seq, primer_kmer_size, bg=False)
     seq_tries[seq.id] = trie
 
 full_seq_trie = merge_tries(list(seq_tries.values()))
 
+if kmer_size != primer_kmer_size:
+    for seq in sequences:
+        print(f"Processing {seq.id}...")
+        trie = create_kmer_trie(seq, kmer_size, bg=False)
+        seq_tries[seq.id] = trie
+    
+
 # %%
-threshold = 100
-pr_threshold = 20
+threshold = 50
+pr_threshold = 17
 neighbourhood_size = 5500
 
 bg_regions = {}
@@ -32,16 +40,14 @@ cur_seq_regions = {}
 local_neigh_regions = {}
 for seq in sequences:
     bg_regions[seq.id] = find_non_homologous_regions(seq, bg_trie, [], kmer_size, threshold=threshold)
-    full_seq_regions[seq.id] = find_non_homologous_regions(seq, full_seq_trie, bg_trie, kmer_size, threshold=pr_threshold)
+    full_seq_regions[seq.id] = find_non_homologous_regions(seq, full_seq_trie, [], kmer_size, threshold=pr_threshold)
     cur_seq_regions[seq.id] = find_non_homologous_regions(seq, seq_tries[seq.id], bg_trie, kmer_size, threshold=threshold)
     local_neigh_regions[seq.id] = find_local_non_homologous_regions(seq, kmer_size, threshold, neighbourhood_size)
 
 # %%
-local_bg_intersects = get_region_intersects(local_neigh_regions['seq_0'], bg_regions['seq_0'], threshold)
-# primers should be inside valid overlap regions
-
 primer_candidate_regions = {}
 for seq in sequences:
+    local_neigh_regions[seq.id] = get_region_intersects(local_neigh_regions[seq.id], bg_regions[seq.id], threshold)
     primer_candidate_regions[seq.id] = get_region_intersects(full_seq_regions[seq.id], local_neigh_regions[seq.id], pr_threshold)
 
 # %%
@@ -54,8 +60,29 @@ for seq in sequences:
     print(seq.id)
     primer_flanked_overlaps[seq.id] = get_primer_overlaps_from_seq(str(seq.seq), primer_candidate_regions[seq.id], 
                                                                    gc_clamp_pattern_forward, gc_clamp_pattern_reverse, 3,
-                                                                   five_prime_clamp_pattern=re.compile(r'[GC]'))
+                                                                   five_prime_clamp_pattern=re.compile(r'[GC]'), min_overlap=50)
 
+# %%
+min_step = 50
+min_overlap = 50
+max_overlap = 100
+
+segment_overlaps = {}
+for seq in sequences:
+    print(seq.id)
+    cur_overlaps = []
+    for region in cur_seq_regions[seq.id]:
+        if region[1] - region[0] < max_overlap and region[1] - region[0] >= min_overlap:
+            cur_overlaps.append(region)
+            continue
+        for start in range(region[0], region[1] - max_overlap + 1, min_step):
+            cur_overlaps.append((start, start + max_overlap))
+        for end in range(region[1], region[0] + max_overlap - 1, -min_step):
+            cur_overlaps.append((end - max_overlap, end))
+    segment_overlaps[seq.id] = sorted(cur_overlaps, key=lambda x: x[0])
+
+
+# %%
 
 # %%
 # default primer 3 parameters
