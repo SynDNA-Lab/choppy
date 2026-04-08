@@ -6,6 +6,7 @@ import re
 import primer3
 import matplotlib.pyplot as plt
 import networkx as nx
+import heapq
 # %%
 sequences = list(SeqIO.parse("data/random_seqs_50k.fa", "fasta"))
 
@@ -108,33 +109,46 @@ def get_edge_penalty(left_ov, right_ov,
 
     return penalty
 
+def get_edge_clamp(left_ov, right_ov):
+    return left_ov['left_clamp'] + right_ov['right_clamp']
+    
 def add_vertex(G, ov, overlap_list=None):
     if not G.has_node(ov['pos']):
         if ov['type'] == 'seg':
-            G.add_node(ov['pos'], type=ov['type'], pos=ov['pos'])
+            G.add_node(ov['pos'], type=ov['type'], pos=ov['pos'],
+                       left_clamp=0, right_clamp=0)
         if ov['type'] == 'fr':
+            left_clamp = 3 if overlap_list[ov['pr_ind']]['forward']['seq'][0] == 'G' else 2
+            right_clamp = 3 if overlap_list[ov['pr_ind']]['reverse']['seq'][0] == 'G' else 2
             G.add_node(ov['pos'], type=ov['type'], pos=ov['pos'],
                        pr_left_len=len(overlap_list[ov['pr_ind']]['forward']['seq']), 
                        pr_right_len=len(overlap_list[ov['pr_ind']]['reverse']['seq']), 
                        tm_left=overlap_list[ov['pr_ind']]['forward']['tm'], 
-                       tm_right=overlap_list[ov['pr_ind']]['reverse']['tm'])
+                       tm_right=overlap_list[ov['pr_ind']]['reverse']['tm'],
+                       left_clamp=left_clamp, right_clamp=right_clamp)
 
 # %%
 seq_id = sequences[0].id
 
 G = nx.DiGraph()
 
-min_length = 300
+max_heterodimer_tm = 45.0
+max_heterodimer_end_stability = 35.0
+
+min_length = 1200
 max_length = 1800
 
 opt_primer_len = (max_primer_length + min_primer_length) / 2
 max_primer_len_diff = max_primer_length - min_primer_length
 
+start_vertex = (-100, 0)
+end_vertex = (len(str(sequences[0].seq)), len(str(sequences[0].seq)) + 100)
+
 all_overlaps = (
     [{'pos': ov, 'type': 'seg'} for ov in segment_overlaps[seq_id]] +
     [{'pos': (ov['overlap_start'], ov['overlap_end']), 'type': 'fr', 'pr_ind': i} for i, ov in enumerate(primer_flanked_overlaps[seq_id])] +
-    [{'pos': (-100, 0), 'type': 'seg'}, 
-     {'pos': (len(str(sequences[0].seq)), len(str(sequences[0].seq)) + 100), 'type': 'seg'}]
+    [{'pos': start_vertex, 'type': 'seg'}, 
+     {'pos': end_vertex, 'type': 'seg'}]
 )
 all_overlaps = sorted(all_overlaps, key=lambda x: x['pos'][0])
 
@@ -151,10 +165,22 @@ for i, ov in enumerate(all_overlaps):
         length = next_ov['pos'][1] - ov['pos'][0]
         if min_length <= length <= max_length and (allow_seg or next_ov['type'] == 'fr'):
             add_vertex(G, next_ov, primer_flanked_overlaps[seq_id])
+            hetero_tm = 0.0
+            hetero_end_stability = 0.0
+            if ov['type'] == 'fr' and next_ov['type'] == 'fr':
+                hetero_tm = primer3.calc_heterodimer_tm(
+                    primer_flanked_overlaps[seq_id][ov['pr_ind']]['forward']['seq'], 
+                    primer_flanked_overlaps[seq_id][next_ov['pr_ind']]['reverse']['seq']
+                )
+                hetero_end_stability = primer3.calc_end_stability(
+                    primer_flanked_overlaps[seq_id][ov['pr_ind']]['forward']['seq'], 
+                    primer_flanked_overlaps[seq_id][next_ov['pr_ind']]['reverse']['seq']
+                ).tm
             G.add_edge(ov['pos'], next_ov['pos'], 
                        weight=1 + get_edge_penalty(G.nodes[ov['pos']], G.nodes[next_ov['pos']], 
                                                    opt_primer_len, max_primer_len_diff, 
-                                                   max_overlap, max_overlap - min_overlap))
+                                                   max_overlap, max_overlap - min_overlap),
+                                                   hetero_pass = hetero_tm <= max_heterodimer_tm and hetero_end_stability <= max_heterodimer_end_stability)
         j += 1
 
 # %%
@@ -169,6 +195,93 @@ avg_total_degree = (2 * G.number_of_edges()) / G.number_of_nodes()
 
 print(f"Average In/Out Degree: {avg_in_degree}")
 print(f"Average Total Degree: {avg_total_degree}")
+
+# %%
+def reconstruct_path(predecessors, target_state):
+    path = []
+    step = target_state
+    while step is not None:
+        path.append(step[0]) # We only care about the vertex for the final path
+        step = predecessors[step]
+    path.reverse()
+    return path
+
+
+min_segment = 5000
+
+in_state = (start_vertex, 0, 0) # (vertex, segment_length, clamp_code)
+distances = {in_state: 0.0}
+predecessors = {in_state: None}
+
+pq = []
+heapq.heappush(pq, (0, in_state))
+finished = False
+
+while pq:
+    cur_weight, cur_state = heapq.heappop(pq)
+    if cur_weight > distances.get(cur_state, float('inf')):
+            continue
+    if cur_state[0] == end_vertex:
+        print("Reached end vertex!")
+        finished = True 
+        break
+
+    for v in G.successors(cur_state[0]):
+        edge_data = G.get_edge_data(cur_state[0], v)
+        
+        new_seg_len = round((cur_state[1] + v[1] - cur_state[0][1]) / 100) * 100
+        new_clamp = cur_state[2]
+        new_weight = cur_weight + edge_data['weight']
+        new_weight = round(new_weight, 1)
+
+        # clamp-based restrictions
+        if cur_state[2] == 0:
+            # we have just started
+            new_clamp = G.nodes[v]['right_clamp']
+        else:
+            if new_seg_len > min_segment:
+                # end of the segment, only left clamp of the current vertex matters (left of the new edge)
+                if G.nodes[cur_state[0]]['left_clamp'] == 2 and new_clamp == 6: # C vs GG
+                    continue
+                elif G.nodes[cur_state[0]]['left_clamp'] == 3 and new_clamp == 4: # G vs CC
+                    continue
+                new_clamp = 0
+            else:
+                # in the middle of the segment, both clamps matter
+                edge_clamp = G.nodes[cur_state[0]]['left_clamp'] + G.nodes[v]['right_clamp']
+
+                if cur_state[2] > 3:
+                    if edge_clamp > 3 and cur_state[2] != edge_clamp:
+                        continue
+                    elif edge_clamp == 2 and cur_state[2] == 6: # C vs GG
+                        continue
+                    elif edge_clamp == 3 and cur_state[2] == 4: # G vs CC
+                        continue
+                else:
+                    if cur_state[2] == 2 and edge_clamp == 6: # C vs GG
+                        continue
+                    elif cur_state[2] == 3 and edge_clamp == 4: # G vs CC
+                        continue
+        
+                if new_clamp <= 3 and edge_clamp > 3:
+                    new_clamp = edge_clamp
+                #technically, this should never happen, since it requires a very small segment
+                if new_clamp <= 3 and edge_clamp <= 3 and new_clamp != edge_clamp:
+                    new_clamp += edge_clamp
+
+        # distance-based restrictions
+        if new_seg_len < min_segment:
+            if G.nodes[v]['type'] == 'seg':
+                continue
+        else:
+            new_seg_len = v[1] - v[0]
+
+        new_state = (v, new_seg_len, new_clamp)     
+
+        if new_weight < distances.get(new_state, float('inf')):
+            distances[new_state] = new_weight
+            predecessors[new_state] = cur_state
+            heapq.heappush(pq, (new_weight, new_state))
 
 # %%
 # default primer 3 parameters
