@@ -16,7 +16,8 @@ def check_primer(
     min_gc=0.3, max_gc=0.7, 
     min_tm=57, max_tm=62, 
     max_hairpin_tm=24, max_homodimer_tm=45, 
-    max_3_self_tm=35.0, five_prime_clamp_pattern=None
+    max_3_self_tm=35.0, five_prime_clamp_pattern=None,
+    verbose=False
 ):
     """ 
     Checks if a primer sequence meets certain criteria (checked in the order listed):
@@ -38,20 +39,34 @@ def check_primer(
         poly_x_pattern = get_poly_x_pattern(poly_x_max_length)
         
     if re.search(poly_x_pattern, primer):
+        if verbose:
+            print(f"Primer '{primer}' rejected due to homopolymer run longer than {poly_x_max_length}.")
         return False, None, None
     gc_content  = calc_gc_content(primer)
     if gc_content < min_gc or gc_content > max_gc:
+        if verbose:
+            print(f"Primer '{primer}' rejected due to GC content {gc_content:.2f} outside range {min_gc}-{max_gc}.")
         return False, gc_content, None
     mt = primer3.calc_tm(primer)
     if mt < min_tm or mt > max_tm:
+        if verbose:
+            print(f"Primer '{primer}' rejected due to Tm {mt:.2f} outside range {min_tm}-{max_tm}.")
         return False, gc_content, mt
     if primer3.calc_hairpin_tm(primer) > max_hairpin_tm:
+        if verbose:
+            print(f"Primer '{primer}' rejected due to hairpin Tm {primer3.calc_hairpin_tm(primer):.2f} exceeding {max_hairpin_tm}.")
         return False, gc_content, mt
     if primer3.calc_homodimer_tm(primer) > max_homodimer_tm:
+        if verbose:
+            print(f"Primer '{primer}' rejected due to homodimer Tm {primer3.calc_homodimer_tm(primer):.2f} exceeding {max_homodimer_tm}.")
         return False, gc_content, mt
     if primer3.calc_end_stability(primer, primer).tm > max_3_self_tm:
+        if verbose:
+            print(f"Primer '{primer}' rejected due to 3' self-complementarity Tm {primer3.calc_end_stability(primer, primer).tm:.2f} exceeding {max_3_self_tm}.")
         return False, gc_content, mt
     if five_prime_clamp_pattern is not None and not re.search(five_prime_clamp_pattern, primer):
+        if verbose:
+            print(f"Primer '{primer}' rejected due to missing 5' clamp matching pattern '{five_prime_clamp_pattern.pattern}'.")
         return False, gc_content, mt
     return True, gc_content, mt
 
@@ -226,7 +241,7 @@ def get_primer_overlaps_from_seq(seq, allowed_regions, clamp_pattern_forward, cl
                                  min_gc=0.3, max_gc=0.7, min_tm=57, max_tm=62,
                                  max_hairpin_tm=24, max_homodimer_tm=45, max_3_self_tm=35.0,
                                  min_overlap=60, max_overlap=100, max_heterodimer_tm=45.0,
-                                 five_prime_clamp_pattern=None):
+                                 five_prime_clamp_pattern_forward=None, five_prime_clamp_pattern_reverse=None):
     """
     A convenience function that takes a sequence and parameters for primer design and overlap criteria, and returns possible primer overlaps.
     """
@@ -238,7 +253,7 @@ def get_primer_overlaps_from_seq(seq, allowed_regions, clamp_pattern_forward, cl
                                            max_hairpin_tm=max_hairpin_tm,
                                            max_homodimer_tm=max_homodimer_tm,
                                            max_3_self_tm=max_3_self_tm,
-                                           five_prime_clamp_pattern=five_prime_clamp_pattern)
+                                           five_prime_clamp_pattern=five_prime_clamp_pattern_forward)
     
     reverse_primers = find_reverse_primers(seq, allowed_regions, clamp_pattern_reverse, clamp_length,
                                            min_length=min_length, max_length=max_length,
@@ -248,7 +263,7 @@ def get_primer_overlaps_from_seq(seq, allowed_regions, clamp_pattern_forward, cl
                                            max_hairpin_tm=max_hairpin_tm,
                                            max_homodimer_tm=max_homodimer_tm,
                                            max_3_self_tm=max_3_self_tm,
-                                           five_prime_clamp_pattern=five_prime_clamp_pattern)
+                                           five_prime_clamp_pattern=five_prime_clamp_pattern_reverse)
     
     possible_overlaps = get_primer_overlaps(forward_primers, reverse_primers,
                                             min_overlap=min_overlap, 

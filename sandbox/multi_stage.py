@@ -10,7 +10,10 @@ import heapq
 from collections import defaultdict
 import matplotlib.pyplot as plt
 # %%
-sequences = list(SeqIO.parse("data/random_seqs_50k.fa", "fasta"))
+sequences = list(SeqIO.parse("data/20240414-forSveta.fa", "fasta"))
+
+for seq in sequences:
+    seq.seq = seq.seq.upper()
 
 test_seq = str(sequences[0].seq)
 kmer_size = 15
@@ -320,115 +323,127 @@ min_segment = 5500
 segment_offset = 110
 #offsets: for primers 45 in total, for segments 110 (from each side)
 
-opt_primer_len = (max_primer_length + min_primer_length) / 2
-max_primer_len_diff = max_primer_length - min_primer_length
+def get_overlap_states(primer_flanked_overlaps, segment_overlaps, 
+                       seq_len, min_length, max_length, min_segment, 
+                       segment_offset, max_overlap, min_overlap, 
+                       max_primer_length, min_primer_length):
 
-start_vertex = (-100, 0)
-end_vertex = (len(str(sequences[0].seq)), len(str(sequences[0].seq)) + 100)
+    opt_primer_len = (max_primer_length + min_primer_length) / 2
+    max_primer_len_diff = max_primer_length - min_primer_length
 
-all_overlaps = (
-    [
-        {'pos': ov, 'type': 'seg', 'left_clamp': 0, 'right_clamp': 0} 
-        for ov in segment_overlaps[seq_id]
-    ] +
-    [
-        {
-            'pos': (ov['overlap_start'], ov['overlap_end']), 
-            'type': 'fr', 
-            'pr_ind': i,
-            'left_clamp': 3 if ov['forward']['seq'][0] == 'G' else 2,
-            'right_clamp': 3 if ov['reverse']['seq'][0] == 'G' else 2,
-            'pr_left_len': len(ov['forward']['seq']),
-            'pr_right_len': len(ov['reverse']['seq']),
-            'tm_left': ov['forward']['tm'],
-            'tm_right': ov['reverse']['tm']
-        } 
-        for i, ov in enumerate(primer_flanked_overlaps[seq_id])
-    ] +
-    [
-        {'pos': start_vertex, 'type': 'seg', 'left_clamp': 0, 'right_clamp': 0}, 
-        {'pos': end_vertex, 'type': 'seg', 'left_clamp': 0, 'right_clamp': 0}
-    ]
-)
-all_overlaps = sorted(all_overlaps, key=lambda x: x['pos'][0])
-overlap_states = [{} for _ in range(len(all_overlaps))]
+    start_vertex = (-100, 0)
+    end_vertex = (seq_len, seq_len + 100)
 
-overlap_states[0][(0, 0)] = (0, -1, None) # state: (segment_length, clamp_code): (weight, predecessor_ind, predecessor_state)
+    all_overlaps = (
+        [
+            {'pos': ov, 'type': 'seg', 'left_clamp': 0, 'right_clamp': 0} 
+            for ov in segment_overlaps
+        ] +
+        [
+            {
+                'pos': (ov['overlap_start'], ov['overlap_end']), 
+                'type': 'fr', 
+                'pr_ind': i,
+                'left_clamp': 3 if ov['forward']['seq'][0] == 'G' else 2,
+                'right_clamp': 3 if ov['reverse']['seq'][0] == 'G' else 2,
+                'pr_left_len': len(ov['forward']['seq']),
+                'pr_right_len': len(ov['reverse']['seq']),
+                'tm_left': ov['forward']['tm'],
+                'tm_right': ov['reverse']['tm']
+            } 
+            for i, ov in enumerate(primer_flanked_overlaps)
+        ] +
+        [
+            {'pos': start_vertex, 'type': 'seg', 'left_clamp': 0, 'right_clamp': 0}, 
+            {'pos': end_vertex, 'type': 'seg', 'left_clamp': 0, 'right_clamp': 0}
+        ]
+    )
+    all_overlaps = sorted(all_overlaps, key=lambda x: x['pos'][0])
+    overlap_states = [{} for _ in range(len(all_overlaps))]
 
-for i, ov in enumerate(all_overlaps):
+    overlap_states[0][(0, 0)] = (0, -1, None) # state: (segment_length, clamp_code): (weight, predecessor_ind, predecessor_state)
 
-    if i % 1000 == 0:
-        print(f"Processing overlap {i}/{len(all_overlaps)}")
+    for i, ov in enumerate(all_overlaps):
 
-    j = i + 1
-    too_far = False
-    while j < len(all_overlaps) and not too_far:
-        next_ov = all_overlaps[j]
-        if next_ov['pos'][0] - ov['pos'][0] > max_length:
-            too_far = True
-            continue
-        length = next_ov['pos'][1] - ov['pos'][0]
-        if min_length <= length <= max_length:
-            edge_weight = 100 + get_edge_penalty(ov, next_ov, 
-                                                opt_primer_len, max_primer_len_diff, 
-                                                max_overlap, max_overlap - min_overlap)
-            for state, (cur_weight, _, _) in overlap_states[i].items():
-                new_seg_len = round((state[0] + next_ov['pos'][1] - ov['pos'][1]) / 100) * 100
-                new_clamp = state[1]
-                new_weight = cur_weight + edge_weight
+        if i % 1000 == 0:
+            print(f"Processing overlap {i}/{len(all_overlaps)}")
 
-                if (new_seg_len >= min_segment or new_clamp == 0) and length + segment_offset > max_length:
-                    continue
-                if new_seg_len < min_segment and next_ov['type'] == 'seg':
-                    continue
+        j = i + 1
+        too_far = False
+        while j < len(all_overlaps) and not too_far:
+            next_ov = all_overlaps[j]
+            if next_ov['pos'][0] - ov['pos'][0] > max_length:
+                too_far = True
+                continue
+            length = next_ov['pos'][1] - ov['pos'][0]
+            if min_length <= length <= max_length:
+                edge_weight = 100 + get_edge_penalty(ov, next_ov, 
+                                                    opt_primer_len, max_primer_len_diff, 
+                                                    max_overlap, max_overlap - min_overlap)
+                for state, (cur_weight, _, _) in overlap_states[i].items():
+                    new_seg_len = round((state[0] + next_ov['pos'][1] - ov['pos'][1]) / 100) * 100
+                    new_clamp = state[1]
+                    new_weight = cur_weight + edge_weight
 
-                # clamp-based restrictions
-                if state[1] == 0:
-                    # we have just started
-                    new_clamp = next_ov['right_clamp']
-                else:
-                    if new_seg_len > min_segment:
-                        # end of the segment, only left clamp of the current vertex matters (left of the new edge)
-                        if ov['type'] == 'fr' and next_ov['type'] == 'fr':
-                            if ov['right_clamp'] == 2 and next_ov['right_clamp'] == 6: # C vs GG
-                                continue
-                            elif ov['right_clamp'] == 3 and next_ov['right_clamp'] == 4: # G vs CC
-                                continue
-                        new_clamp = 0
+                    if (new_seg_len >= min_segment or new_clamp == 0) and length + segment_offset > max_length:
+                        continue
+                    if new_seg_len < min_segment and next_ov['type'] == 'seg':
+                        continue
+
+                    # clamp-based restrictions
+                    if state[1] == 0:
+                        # we have just started
+                        new_clamp = next_ov['right_clamp']
                     else:
-                        # in the middle of the segment, both clamps matter
-                        edge_clamp = ov['right_clamp'] + next_ov['right_clamp']
-
-                        if state[1] > 3:
-                            if edge_clamp > 3 and state[1] != edge_clamp:
-                                continue
-                            elif edge_clamp == 2 and state[1] == 6: # C vs GG
-                                continue
-                            elif edge_clamp == 3 and state[1] == 4: # G vs CC
-                                continue
+                        if new_seg_len > min_segment:
+                            # end of the segment, only left clamp of the current vertex matters (left of the new edge)
+                            if ov['type'] == 'fr' and next_ov['type'] == 'fr':
+                                if ov['right_clamp'] == 2 and next_ov['right_clamp'] == 6: # C vs GG
+                                    continue
+                                elif ov['right_clamp'] == 3 and next_ov['right_clamp'] == 4: # G vs CC
+                                    continue
+                            new_clamp = 0
                         else:
-                            if state[1] == 2 and edge_clamp == 6: # C vs GG
-                                continue
-                            elif state[1] == 3 and edge_clamp == 4: # G vs CC
-                                continue
-            
-                        if new_clamp <= 3 and edge_clamp > 3:
-                            new_clamp = edge_clamp
-                        #technically, this should never happen, since it requires a very small segment
-                        if new_clamp <= 3 and edge_clamp <= 3 and new_clamp != edge_clamp:
-                            new_clamp += edge_clamp
+                            # in the middle of the segment, both clamps matter
+                            edge_clamp = ov['right_clamp'] + next_ov['right_clamp']
 
-                if new_seg_len >= min_segment:
-                    new_seg_len = 0
+                            if state[1] > 3:
+                                if edge_clamp > 3 and state[1] != edge_clamp:
+                                    continue
+                                elif edge_clamp == 2 and state[1] == 6: # C vs GG
+                                    continue
+                                elif edge_clamp == 3 and state[1] == 4: # G vs CC
+                                    continue
+                            else:
+                                if state[1] == 2 and edge_clamp == 6: # C vs GG
+                                    continue
+                                elif state[1] == 3 and edge_clamp == 4: # G vs CC
+                                    continue
                 
-                new_state = (new_seg_len, new_clamp)
-                if new_state not in overlap_states[j] or new_weight < overlap_states[j][new_state][0]:
-                    overlap_states[j][new_state] = (new_weight, i, state)
-        j += 1
+                            if new_clamp <= 3 and edge_clamp > 3:
+                                new_clamp = edge_clamp
+                            #technically, this should never happen, since it requires a very small segment
+                            if new_clamp <= 3 and edge_clamp <= 3 and new_clamp != edge_clamp:
+                                new_clamp += edge_clamp
 
-            
+                    if new_seg_len >= min_segment:
+                        new_seg_len = 0
+                    
+                    new_state = (new_seg_len, new_clamp)
+                    existing = overlap_states[j].get(new_state)
+                    if existing is None or new_weight < existing[0]:
+                        overlap_states[j][new_state] = (new_weight, i, state)
+            j += 1
+    return overlap_states
 
-        
+
+full_overlap_states = {}
+for seq in sequences:
+    print(seq.id)
+    full_overlap_states[seq.id] = get_overlap_states(primer_flanked_overlaps[seq.id], segment_overlaps[seq.id], 
+                                                      len(str(seq.seq)), min_length, max_length, min_segment, 
+                                                      segment_offset, max_overlap, min_overlap, 
+                                                      max_primer_length, min_primer_length)
 
 
 # %%

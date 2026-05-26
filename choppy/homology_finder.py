@@ -34,12 +34,12 @@ def parse_sequence_files(file_paths: Union[str, List[str]]) -> List[SeqRecord]:
     return records
 
 # TO DO: add option to subtract background
-def create_kmer_trie(sequence: SeqRecord, kmer_size: int, bg: bool) -> mt.Trie:
+def create_kmer_trie(sequence: Union[SeqRecord, List[SeqRecord]], kmer_size: int, bg: bool) -> mt.Trie:
     """
     Create a k-mer trie from a sequence, considering both strands.
 
     Args:
-        sequence (SeqRecord): Input sequence record
+        sequence (Union[SeqRecord, List[SeqRecord]]): Input sequence record or list of sequence records
         kmer_size (int): Size of k-mers
         bg (bool): If True, create a set of all unique k-mers (for background sequences); 
             if False, track k-mers appearing more than once (for query sequences)
@@ -47,31 +47,35 @@ def create_kmer_trie(sequence: SeqRecord, kmer_size: int, bg: bool) -> mt.Trie:
     Returns:
         mt.Trie: Trie containing the k-mers (marisa_trie)
     """
+    if isinstance(sequence, SeqRecord):
+        sequence = [sequence]
 
-    sequence_str = str(sequence.seq)
-    sequence_rc_str = str(sequence.seq.reverse_complement())
+    kmers = set() if bg else {}
+    
+    for seq in sequence:
+        sequence_str = str(seq.seq)
+        sequence_rc_str = str(seq.seq.reverse_complement())
 
-    if sequence.annotations.get("topology", "").lower() == "circular":
-        sequence_str = sequence_str + sequence_str[0:kmer_size - 1]
+        if seq.annotations.get("topology", "").lower() == "circular":
+            sequence_str = sequence_str + sequence_str[0:kmer_size - 1]
         sequence_rc_str = sequence_rc_str + sequence_rc_str[0:kmer_size - 1]
 
-    if bg:
-        kmers = set()
-        for i in tqdm(range(len(sequence_str) - kmer_size + 1), desc="Processing sequence"):
-            kmers.add(sequence_str[i : i + kmer_size])
-            kmers.add(sequence_rc_str[i : i + kmer_size])
-    else:
-        kmers_dict = {}
-        for i in tqdm(range(len(sequence_str) - kmer_size + 1), desc="Processing sequence"):
-            for kmer in (sequence_str[i : i + kmer_size], sequence_rc_str[i : i + kmer_size]):
-                if kmers_dict.get(kmer) is None:
-                    kmers_dict[kmer] = False
-                elif kmers_dict[kmer] is False:
-                    kmers_dict[kmer] = True
+        if bg:
+            for i in tqdm(range(len(sequence_str) - kmer_size + 1), desc="Processing sequence"):
+                kmers.add(sequence_str[i : i + kmer_size])
+                kmers.add(sequence_rc_str[i : i + kmer_size])
+        else:
+            for i in tqdm(range(len(sequence_str) - kmer_size + 1), desc="Processing sequence"):
+                for kmer in (sequence_str[i : i + kmer_size], sequence_rc_str[i : i + kmer_size]):
+                    if kmers.get(kmer) is None:
+                        kmers[kmer] = False
+                    elif kmers[kmer] is False:
+                        kmers[kmer] = True
         
-        kmers = set(kmer for kmer, val in kmers_dict.items() if val)
+    if not bg:
+        kmers = set(kmer for kmer, val in kmers.items() if val)
 
-    print(f"Found {len(kmers)} unique k-mers of size {kmer_size} in sequence {sequence.id}")
+    print(f"Found {len(kmers)} unique k-mers of size {kmer_size} in {len(sequence)} sequence(s).")
     print("Constructing a trie...")
     return mt.Trie(kmers)
 
