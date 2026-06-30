@@ -41,6 +41,10 @@ CONFIG = {
     'max_gc': 0.7,
     'min_tm': 57.0,
     'max_tm': 62.0,
+    'tm_params': dict(
+        mv_conc=222.0, dv_conc=0.0, dntp_conc=0.0, dna_conc=500.0,
+        tm_method='santalucia', salt_corrections_method='schildkraut',
+    ),
     'max_hairpin_tm': 24.0,
     'max_homodimer_tm': 45.0,
     'max_3_self_tm': 35.0,
@@ -201,12 +205,12 @@ def find_primers_in_regions(seq_record, regions, side, anchor_kmers, sequences_b
                 gc_content = (primer_cand.count('G') + primer_cand.count('C')) / len(primer_cand)
                 if gc_content < cfg['min_gc'] or gc_content > cfg['max_gc']: continue
                 
-                tm = primer3.calc_tm(primer_cand)
+                tm = primer3.calc_tm(primer_cand, **cfg['tm_params'])
                 if tm > cfg['max_tm']: break
                 if tm < cfg['min_tm']: continue
-                if primer3.calc_hairpin_tm(primer_cand) > cfg['max_hairpin_tm']: break
-                if primer3.calc_homodimer_tm(primer_cand) > cfg['max_homodimer_tm']: break
-                if primer3.calc_end_stability(primer_cand, primer_cand).tm > cfg['max_3_self_tm']: break
+                if primer3.calc_hairpin_tm(primer_cand) > cfg['max_hairpin_tm']: continue
+                if primer3.calc_homodimer_tm(primer_cand) > cfg['max_homodimer_tm']: continue
+                if primer3.calc_end_stability(primer_cand, primer_cand).tm > cfg['max_3_self_tm']: continue
                 
                 if side == "forward":
                     native_3_prime_pos = m.end() - 1
@@ -287,26 +291,26 @@ seq_str = str(sequences_by_id[seq_id].seq)
 print(seq_str[pos[0]:pos[1]])
 primer_cand = "GTAGTCACATACCTGAAGAGGCAC"
 print("forward one:")
-print(primer3.calc_tm(primer_cand))
+print(primer3.calc_tm(primer_cand, **CONFIG['tm_params']))
 print(primer3.calc_hairpin_tm(primer_cand))
 print(primer3.calc_homodimer_tm(primer_cand))
 print(primer3.calc_end_stability(primer_cand, primer_cand).tm)
 # Well, that's a very nasty hairpin, to be honest...
 forward_pr = {"seq": primer_cand,
                 "gc_content": (primer_cand.count('G') + primer_cand.count('C')) / len(primer_cand),
-                "tm": primer3.calc_tm(primer_cand),
+                "tm": primer3.calc_tm(primer_cand, **CONFIG['tm_params']),
                 "pos": (pos[0], pos[0] + len(primer_cand)),
                 "side": "forward"}
 
 primer_cand = reverse_complement("GGCAGAAAGTTTCACCTGTTCT")
 print("reverse one:")
-print(primer3.calc_tm(primer_cand))
+print(primer3.calc_tm(primer_cand, **CONFIG['tm_params']))
 print(primer3.calc_hairpin_tm(primer_cand))
 print(primer3.calc_homodimer_tm(primer_cand))
 print(primer3.calc_end_stability(primer_cand, primer_cand).tm)
 reverse_pr = {"seq": primer_cand,
                 "gc_content": (primer_cand.count('G') + primer_cand.count('C')) / len(primer_cand),
-                "tm": primer3.calc_tm(primer_cand),
+                "tm": primer3.calc_tm(primer_cand, **CONFIG['tm_params']),
                 "pos": (pos[1] - len(primer_cand), pos[1]),
                 "side": "reverse"}
 range_ov = get_overlap_range(pos[0], pos[1], homfree_ranges[seq_id], CONFIG['kmer_size'])
@@ -323,26 +327,26 @@ seq_str = str(sequences_by_id[seq_id].seq)
 print(seq_str[pos[0]:pos[1]])
 primer_cand = "TTACTCACAACATACAGAGAAGCC"
 print("forward two:")
-print(primer3.calc_tm(primer_cand))
+print(primer3.calc_tm(primer_cand, **CONFIG['tm_params']))
 print(primer3.calc_hairpin_tm(primer_cand))
 print(primer3.calc_homodimer_tm(primer_cand))
 print(primer3.calc_end_stability(primer_cand, primer_cand).tm)
 # Well, that's a very nasty hairpin, to be honest...
 forward_pr = {"seq": primer_cand,
                 "gc_content": (primer_cand.count('G') + primer_cand.count('C')) / len(primer_cand),
-                "tm": primer3.calc_tm(primer_cand),
+                "tm": primer3.calc_tm(primer_cand, **CONFIG['tm_params']),
                 "pos": (pos[0], pos[0] + len(primer_cand)),
                 "side": "forward"}
 
 primer_cand = reverse_complement("GAGAAGCCGAGTATTTTCTACCAA")
 print("reverse two:")
-print(primer3.calc_tm(primer_cand))
+print(primer3.calc_tm(primer_cand, **CONFIG['tm_params']))
 print(primer3.calc_hairpin_tm(primer_cand))
 print(primer3.calc_homodimer_tm(primer_cand))
 print(primer3.calc_end_stability(primer_cand, primer_cand).tm)
 reverse_pr = {"seq": primer_cand,
                 "gc_content": (primer_cand.count('G') + primer_cand.count('C')) / len(primer_cand),
-                "tm": primer3.calc_tm(primer_cand),
+                "tm": primer3.calc_tm(primer_cand, **CONFIG['tm_params']),
                 "pos": (pos[1] - len(primer_cand), pos[1]),
                 "side": "reverse"}
 range_ov = get_overlap_range(pos[0], pos[1], homfree_ranges[seq_id], CONFIG['kmer_size'])
@@ -868,7 +872,7 @@ for stretch in consecutive_true:
 
 # %%
 primer_cand = "TTACTCACAACATACAGAGAAGCC"
-print(primer3.calc_tm(primer_cand))
+print(primer3.calc_tm(primer_cand, **CONFIG['tm_params']))
 print(primer3.calc_hairpin_tm(primer_cand))
 print(primer3.calc_homodimer_tm(primer_cand))
 print(primer3.calc_end_stability(primer_cand, primer_cand).tm)
