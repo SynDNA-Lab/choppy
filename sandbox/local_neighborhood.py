@@ -26,7 +26,7 @@ bm_len = 1
 # %%
 all_sequences = list(SeqIO.parse("data/20240414-forSveta.fa", "fasta"))
 
-seq_id = "Pereira_COS-SynDNA-f2"
+seq_id = "Maizel_COS-AT1G27430-GYF2"
 seq = next(s for s in all_sequences if s.id == seq_id)
 
 seq_str = str(seq.seq).upper()
@@ -117,3 +117,6 @@ for ov in overlaps:
     reg = get_overlap_range(ov["pos"][0], ov["pos"][1], homfree_ranges, kmer_size)
     if reg != ov["range"]:
         print(f"Overlap {ov['pos']} has range {ov['range']} but should be {reg}")
+
+# %%
+list(filter(lambda reg: reg[0] > 0 or reg[1] < len(seq_str), homfree_ranges))
