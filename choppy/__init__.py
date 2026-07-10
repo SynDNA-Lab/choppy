@@ -6,7 +6,7 @@ for in vivo DNA assembly by homologous recombination in yeast S. cerevisiae.
 """
 
 from .fragment_annotator import annotate_fragments, extract_no_homology_regions, fragment_from_file
-from .homology_finder import annotate_homology, file_process_homology, store_trie_from_file, load_trie, create_kmer_trie, find_non_homologous_regions
+from .homology_finder import annotate_homology, file_process_homology, store_trie_from_file, load_trie, create_kmer_trie, find_non_homologous_regions, get_region_intersects
 
 __version__ = "0.1.0"
 
@@ -20,4 +20,5 @@ __all__ = [
     "load_trie",
     "create_kmer_trie",
     "find_non_homologous_regions",
+    "get_region_intersects"
 ]
