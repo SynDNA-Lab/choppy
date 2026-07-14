@@ -1,0 +1,32 @@
+LOCUS       synDNA__annotations_synDNA_ 241 bp  DNA    linear       23-FEB-2026
+COMMENT     big_multilayers_single-SynDNA20260202 from 1 to 9586
+COMMENT     >8H8KL_2L_Single
+COMMENT     ApEinfo:methylated:1
+DNA           linear       14-FEB-2026
+EMBL_ID     20260219_synDNA_         241 bp    DNA        linear       23-FEB-2026
+UNIMARK     synDNA  annotations synDNA  annotations
+            synDNA  annotations synDNA 
+FEATURES             Location/Qualifiers
+     misc_feature    1..95
+                     /locus_tag="TT2L-homology_for_TAR"
+     misc_feature    1..2
+                     /locus_tag="part_of_NotI(1)"
+     misc_feature    107..136
+                     /locus_tag="SOI"
+     primer_bind     107..126
+                     /PCR_conditions="primer
+                     sequence:gtgaattg<TAATACGACTCACTATAGGG"
+                     /locus_tag="T7"
+     promoter        107..125
+                     /locus_tag="T7 promoter 4/14/23"
+     misc_feature    complement(145..241)
+                     /locus_tag="TT2R-homology_for_TAR"
+     misc_feature    240..241
+                     /locus_tag="part_of_NotI"
+ORIGIN
+        1 GCTTTTTTTA CACCCATACA TCTAATATAT ATGTTACCCG CGGTTACCCG GACCAGCAAG
+       61 TATATAGCAT GGCAAAAACA TAAAGAAAGG CCCGGGGTCT CTAGCTTAAT ACGACTCACT
+      121 ATAGGGNNNN NNNNNNTGAA GAGCCTGGCA AGCCACGTTT GGGTCACAGC TTGTCTGTAA
+      181 GCCCTCCTTG AAACTGAAAT TTTAGCATGT GATTAATTAA CTTGTAATAT TCTAATCAAG
+      241 C
+//
