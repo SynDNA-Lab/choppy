@@ -20,34 +20,9 @@ documentation = "https://github.com/SynDNA-Lab/choppy"
 
 [tool.poetry.dependencies]
 python = "^3.12"
-bio = "^1.8.0"
-tqdm = "^4.64.0"
-click = "^8.3.0"
-marisa-trie = "^1.3.1"
-networkx = "^3.5"
-# Optional dependencies
-fastapi = {version = "^0.119.1", optional = true, extras = ["standard"]}
-uvicorn = {version = "^0.32.1", optional = true}
-jinja2 = {version = "^3.1.6", extras = ["server"]}
-primer3-py = "^2.3.0"
-
-[tool.poetry.extras]
-server = ["fastapi", "uvicorn"]
-
-[tool.poetry.group.dev.dependencies]
-pytest = "^7.0"
-pytest-cov = "^4.0"
-black = "^23.0"
-flake8 = "^6.0"
-mypy = "^1.0"
-ipykernel = "^7.2.0"
-
-[tool.poetry.group.docs.dependencies]
-sphinx = "^5.0"
-sphinx-rtd-theme = "^1.0"
-
-[tool.poetry.scripts]
-choppy = "choppy.cli:cli"
+numpy = "^2.5.4"
+marisa-trie = "^1.4.1"
+biopython = "^1.88"
 
 
 [build-system]
