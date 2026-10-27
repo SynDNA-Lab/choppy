@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 import numpy as np
 from Bio import SeqIO
+import re
 
 def reverse_complement(seq: str) -> str:
     complement = str.maketrans("ACGT", "TGCA")
@@ -25,7 +26,7 @@ class AbstractCondition(ABC):
     map: np.ndarray | None = field(default=None, init=False, repr=False)
 
     def build_map(self, seq: str, min_len: int, max_len: int) -> np.ndarray:
-        self.map = np.full((len(seq) - min_len + 1, max_len - min_len + 1), np.nan, dtype=np.float16)
+        self.map = np.full((len(seq) - min_len + 1, max_len - min_len + 1), 0.0, dtype=np.float16)
         self._fill_map(seq, min_len, max_len)
         return self.map
 
@@ -139,10 +140,27 @@ class BGHomology(KmerHomology):
 
     def _kmer_scores(self, seq: str) -> np.ndarray:
         return np.float16(self.bg.lookup(seq) / self.multiplier)
-
+    
 @dataclass
 class SelfHomology(KmerHomology):
 
     def _kmer_scores(self, seq: str) -> np.ndarray:
         repeats = BackgroundKmers.from_seqs([seq], self.kmer).lookup(seq) - 1
         return np.float16(repeats / max(repeats.max(), 1))
+
+@dataclass
+class BoundaryMotif(AbstractCondition):
+    motif: str = "GC"
+
+    def _fill_map(self, seq: str, min_len: int, max_len: int) -> None:
+        matches = list(re.finditer(self.motif, seq))
+        starts = np.array([m.start() for m in matches], dtype=np.int64)
+        ends = np.array([m.end() for m in matches], dtype=np.int64)
+
+        self.map[starts[starts < self.map.shape[0]], :] = 1.0
+
+        j = np.arange(self.map.shape[1])
+        i = ends[:, None] - min_len - j
+        ok = (i >= 0) & (i < self.map.shape[0])
+        self.map[i[ok], np.broadcast_to(j, i.shape)[ok]] = 1.0
+
