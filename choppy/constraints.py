@@ -33,6 +33,22 @@ class AbstractCondition(ABC):
     @abstractmethod
     def _fill_map(self, seq: str, min_len: int, max_len: int) -> None: ...
 
+    def feasible(self) -> np.ndarray:
+        """Boolean mask of the overlaps that satisfy this condition as a constraint.
+
+        min_val is a floor, max_val a ceiling; a condition with neither set is not a
+        constraint and admits everything. NaN entries (overlaps running past the end of
+        the sequence) are never feasible.
+        """
+        if self.map is None:
+            raise ValueError("build_map must be called before feasible")
+        ok = ~np.isnan(self.map)
+        if self.min_val is not None:
+            ok &= self.map >= self.min_val
+        if self.max_val is not None:
+            ok &= self.map <= self.max_val
+        return ok
+
 class PolyX(AbstractCondition):
 
     def score(self, seq: str) -> np.float16:
@@ -157,10 +173,16 @@ class BoundaryMotif(AbstractCondition):
         starts = np.array([m.start() for m in matches], dtype=np.int64)
         ends = np.array([m.end() for m in matches], dtype=np.int64)
 
-        self.map[starts[starts < self.map.shape[0]], :] = 1.0
+        opens = np.zeros(self.map.shape[0], dtype=bool)
+        opens[starts[starts < self.map.shape[0]]] = True
 
-        j = np.arange(self.map.shape[1])
-        i = ends[:, None] - min_len - j
-        ok = (i >= 0) & (i < self.map.shape[0])
-        self.map[i[ok], np.broadcast_to(j, i.shape)[ok]] = 1.0
+        closes = np.zeros(len(seq) + 1, dtype=bool)
+        closes[ends] = True
+
+        i = np.arange(self.map.shape[0])[:, None]
+        j = np.arange(self.map.shape[1])[None, :]
+        stop = i + min_len + j
+        shuts = closes[np.minimum(stop, len(seq))] & (stop <= len(seq))
+
+        self.map[:] = (opens[:, None] & shuts).astype(np.float16)
 
