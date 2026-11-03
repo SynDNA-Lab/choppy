@@ -18,20 +18,61 @@ def encode_kmers(seq: str, kmer: int) -> np.ndarray:
         enc = (enc << np.uint64(2)) | codes[j:j + m]
     return enc
 
+@dataclass(frozen=True)
+class OverlapGrid:
+    """Helper class to convert between overlap coordinates and condition map cells."""
+    seq_len: int
+    min_len: int
+    max_len: int
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        return (self.seq_len - self.min_len + 1, self.max_len - self.min_len + 1)
+
+    def cell(self, start: int, end: int) -> tuple[int, int]:
+        """Convert an overlap (start, end) to a cell in the condition map."""
+        length = end - start
+        if length < self.min_len or length > self.max_len:
+            raise ValueError(f"Overlap length {length} is out of bounds [{self.min_len}, {self.max_len}]")
+        i = start
+        j = length - self.min_len
+        return i, j
+
+    def overlap(self, i: int, j: int) -> tuple[int, int]:
+        """Convert a cell in the condition map to an overlap (start, end)."""
+        if i < 0 or i >= self.shape[0] or j < 0 or j >= self.shape[1]:
+            raise ValueError(f"Cell ({i}, {j}) is out of bounds {self.shape}")
+        start = i
+        end = start + self.min_len + j
+        return start, end
+
+@dataclass
+class OverlapMap:
+    grid: OverlapGrid
+    values: np.ndarray
+
+    def get_cell(self, i: int, j: int) -> np.float16:
+        return self.values[i, j]
+
+    def get_overlap(self, start: int, end: int) -> np.float16:
+        i, j = self.grid.cell(start, end)
+        return self.values[i, j]
+
 @dataclass
 class AbstractCondition(ABC):
     min_val: np.float16 | None = None
     max_val: np.float16 | None = None
     opt_val: np.float16 | None = None
-    map: np.ndarray | None = field(default=None, init=False, repr=False)
+    map: OverlapMap | None = field(default=None, init=False, repr=False)
 
-    def build_map(self, seq: str, min_len: int, max_len: int) -> np.ndarray:
-        self.map = np.full((len(seq) - min_len + 1, max_len - min_len + 1), 0.0, dtype=np.float16)
-        self._fill_map(seq, min_len, max_len)
+    def build_map(self, seq: str, min_len: int, max_len: int) -> OverlapMap:
+        grid = OverlapGrid(len(seq), min_len, max_len)
+        self.map = OverlapMap(grid, np.full(grid.shape, 0.0, dtype=np.float16))
+        self._fill_map(seq, grid)
         return self.map
 
     @abstractmethod
-    def _fill_map(self, seq: str, min_len: int, max_len: int) -> None: ...
+    def _fill_map(self, seq: str, grid: OverlapGrid) -> None: ...
 
     def feasible(self) -> np.ndarray:
         """Boolean mask of the overlaps that satisfy this condition as a constraint.
@@ -42,11 +83,12 @@ class AbstractCondition(ABC):
         """
         if self.map is None:
             raise ValueError("build_map must be called before feasible")
-        ok = ~np.isnan(self.map)
+        values = self.map.values
+        ok = ~np.isnan(values)
         if self.min_val is not None:
-            ok &= self.map >= self.min_val
+            ok &= values >= self.min_val
         if self.max_val is not None:
-            ok &= self.map <= self.max_val
+            ok &= values <= self.max_val
         return ok
 
 class PolyX(AbstractCondition):
@@ -54,8 +96,8 @@ class PolyX(AbstractCondition):
     def score(self, seq: str) -> np.float16:
         return np.float16(len(seq) > self.max_len)
 
-    def _fill_map(self, seq: str, min_len: int, max_len: int) -> None:
-        self.map[0, 0] = self.score(seq)
+    def _fill_map(self, seq: str, grid: OverlapGrid) -> None:
+        self.map.values[0, 0] = self.score(seq)
 
 @dataclass
 class BackgroundKmers:
@@ -125,11 +167,11 @@ class KmerHomology(AbstractCondition):
     @abstractmethod
     def _kmer_scores(self, seq: str) -> np.ndarray: ...
 
-    def _fill_map(self, seq: str, min_len: int, max_len: int) -> None:
+    def _fill_map(self, seq: str, grid: OverlapGrid) -> None:
         scores = self._kmer_scores(seq)
-        padded = np.concatenate([scores, np.full(max_len - min_len, np.nan, dtype=np.float16)])
-        windows = np.lib.stride_tricks.sliding_window_view(padded, max_len - self.kmer + 1)
-        self.map[:] = np.maximum.accumulate(windows, axis=1)[:, min_len - self.kmer:]
+        padded = np.concatenate([scores, np.full(grid.max_len - grid.min_len, np.nan, dtype=np.float16)])
+        windows = np.lib.stride_tricks.sliding_window_view(padded, grid.max_len - self.kmer + 1)
+        self.map.values[:] = np.maximum.accumulate(windows, axis=1)[:, grid.min_len - self.kmer:]
 
 @dataclass
 class BGHomology(KmerHomology):
@@ -156,7 +198,7 @@ class BGHomology(KmerHomology):
 
     def _kmer_scores(self, seq: str) -> np.ndarray:
         return np.float16(self.bg.lookup(seq) / self.multiplier)
-    
+
 @dataclass
 class SelfHomology(KmerHomology):
 
@@ -168,21 +210,24 @@ class SelfHomology(KmerHomology):
 class BoundaryMotif(AbstractCondition):
     motif: str = "GC"
 
-    def _fill_map(self, seq: str, min_len: int, max_len: int) -> None:
+    def _fill_map(self, seq: str, grid: OverlapGrid) -> None:
+        n_starts, n_lens = grid.shape
         matches = list(re.finditer(self.motif, seq))
         starts = np.array([m.start() for m in matches], dtype=np.int64)
         ends = np.array([m.end() for m in matches], dtype=np.int64)
 
-        opens = np.zeros(self.map.shape[0], dtype=bool)
-        opens[starts[starts < self.map.shape[0]]] = True
+        opens = np.zeros(n_starts, dtype=bool)
+        opens[starts[starts < n_starts]] = True
 
-        closes = np.zeros(len(seq) + 1, dtype=bool)
+        closes = np.zeros(grid.seq_len + 1, dtype=bool)
         closes[ends] = True
 
-        i = np.arange(self.map.shape[0])[:, None]
-        j = np.arange(self.map.shape[1])[None, :]
-        stop = i + min_len + j
-        shuts = closes[np.minimum(stop, len(seq))] & (stop <= len(seq))
+        i = np.arange(n_starts)[:, None]
+        j = np.arange(n_lens)[None, :]
+        stop = i + grid.min_len + j
+        inside = stop <= grid.seq_len
+        shuts = closes[np.minimum(stop, grid.seq_len)]
 
-        self.map[:] = (opens[:, None] & shuts).astype(np.float16)
+        bounded = opens[:, None] & shuts
+        self.map.values[:] = np.where(inside, ~bounded, np.nan).astype(np.float16)
 

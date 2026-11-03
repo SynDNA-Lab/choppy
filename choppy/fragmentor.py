@@ -11,25 +11,27 @@ class NoAssemblyError(RuntimeError):
 class Overlaps:
     """Every potential overlap of a sequence, together with the conditions scored on it.
 
-    A condition's map is indexed [start, length - min_len], so a candidate overlap is a
-    (start, length) cell. Candidates are the cells that satisfy all constraints at once.
+    Each condition's map carries the grid that converts between an overlap (start, end)
+    and the cell that scores it, so a candidate overlap is a cell. Candidates are the
+    cells that satisfy all constraints at once.
     """
     seq: str
-    min_len: int
-    max_len: int
-    min_step: int | None = None
-    len_step: int | None = None
+    min_len: int # miminal overlap length
+    max_len: int # maximal overlap length
+    min_step: int | None = None # thinning parameter for overlaps (delta_start + delta_end >= min_step)
 
     objectives: list[AbstractCondition] = field(default_factory=list)
     constraints: list[AbstractCondition] = field(default_factory=list)
     candidates: list[tuple[int, int]] = field(default_factory=list)
 
-    starts: np.ndarray | None = field(default=None, init=False, repr=False)
-    ends: np.ndarray | None = field(default=None, init=False, repr=False)
+    shape: tuple[int, int] = field(init=False, repr=False)
 
-    @property
-    def shape(self) -> tuple[int, int]:
-        return (len(self.seq) - self.min_len + 1, self.max_len - self.min_len + 1)
+    def __post_init__(self) -> None:
+        self.shape = (len(self.seq) - self.min_len + 1, self.max_len - self.min_len + 1)
+        if self.min_step is not None and self.min_step <= 0:
+            raise ValueError(f"min_step must be positive, got {self.min_step}")
+        if self.min_step == 1:
+            self.min_step = None  # no thinning needed if min_step is 1
 
     def add_condition(self, condition: AbstractCondition) -> None:
         condition.build_map(self.seq, self.min_len, self.max_len)
@@ -39,61 +41,44 @@ class Overlaps:
             self.constraints.append(condition)
 
     def feasible_mask(self) -> np.ndarray:
-        """Cells admitted by every constraint and short enough to fit in the sequence."""
-        n_starts, n_lens = self.shape
-        start = np.arange(n_starts)[:, None]
-        length = (self.min_len + np.arange(n_lens))[None, :]
-        mask = (start + length) <= len(self.seq)
+        """Boolean mask of the overlaps that satisfy all constraints."""
 
+        mask = np.ones(self.shape, dtype=bool)
         for constraint in self.constraints:
             mask &= constraint.feasible()
         return mask
 
     def _thin(self, mask: np.ndarray) -> np.ndarray:
-        """Stride through the usable cells instead of offering every one of them.
+        ## TODO (after objective scoring): thin with respect to objectives, keeping the best options
+        """Thins the mask of feasible overlaps to avoid excessive candidates."""
 
-        min_step keeps every min_step-th start inside each run of usable starts: this is the
-        0.x min_step, walking a stride through each allowed region. Runs are treated
-        separately so a region always contributes its own first start rather than whatever
-        the global grid happens to hit.
-
-        len_step does the same along the length axis, counting from min_len. Without it every
-        admissible length of every kept start is a separate candidate, which is what makes
-        the overlap graph explode when no boundary motif pins the ends down.
-        """
-        if self.len_step is not None and self.len_step > 1:
-            lengths = np.zeros(mask.shape[1], dtype=bool)
-            lengths[::self.len_step] = True
-            mask = mask & lengths[None, :]
-
-        if self.min_step is None or self.min_step <= 1:
+        if self.min_step is None:
             return mask
 
-        usable = np.flatnonzero(mask.any(axis=1))
-        if usable.size == 0:
-            return mask
+        offsets = []
+        for i in range(self.min_step // 2):
+            for j in range(self.min_step - i * 2):
+                offsets.append((i, j))
+        offsets.pop(0)  # don't include (0, 0) because it would always be kept
+        offsets = np.array(offsets)
 
-        breaks = np.flatnonzero(np.diff(usable) > 1)
-        run_starts = np.concatenate(([0], breaks + 1))
-        run_stops = np.concatenate((breaks + 1, [usable.size]))
+        for i in range(mask.shape[0]):
+            for j in range(mask.shape[1]):
+                if not mask[i, j]:
+                    continue
 
-        keep = np.zeros(mask.shape[0], dtype=bool)
-        for lo, hi in zip(run_starts, run_stops):
-            keep[usable[lo:hi:self.min_step]] = True
-        return mask & keep[:, None]
+                rows, cols = i + offsets[:, 0], j + offsets[:, 1]
+                inside = (rows < mask.shape[0]) & (cols < mask.shape[1])
+                mask[rows[inside], cols[inside]] = False
+        return mask
 
     def generate_candidates(self) -> list[tuple[int, int]]:
         """Potential overlaps as (start, end), sorted by start then end."""
         mask = self._thin(self.feasible_mask())
 
         rows, cols = np.nonzero(mask)
-        starts = rows
-        ends = rows + self.min_len + cols
+        self.candidates = list(zip(rows.tolist(), (rows + self.min_len + cols).tolist()))
 
-        order = np.lexsort((ends, starts))
-        self.starts = starts[order]
-        self.ends = ends[order]
-        self.candidates = list(zip(self.starts.tolist(), self.ends.tolist()))
         return self.candidates
 
 
@@ -119,9 +104,8 @@ class Fragmentor:
     min_fragment_len: InitVar[int | None] = None
     max_fragment_len: InitVar[int | None] = None
     min_step: int | None = None
-    len_step: int | None = None
 
-    fragments: Overlaps = field(init=False, repr=False)
+    fragments: Overlaps | None = field(init=False, repr=False)
     segments: Overlaps = field(init=False, repr=False)
 
     def __post_init__(self, min_segment_overlap_len, max_segment_overlap_len, min_segment_len, max_segment_len,
@@ -156,9 +140,9 @@ class Fragmentor:
         self.max_fragment_len = max_fragment_len
 
         self.fragments = Overlaps(self.seq, min_fragment_overlap_len, max_fragment_overlap_len,
-                                  self.min_step, self.len_step)
+                                  self.min_step) if self.use_fragments else None
         self.segments = Overlaps(self.seq, min_segment_overlap_len, max_segment_overlap_len,
-                                 self.min_step, self.len_step)
+                                 self.min_step)
 
     @staticmethod
     def _check_lengths(name: str, min_overlap_len, max_overlap_len, min_len, max_len) -> None:
@@ -192,6 +176,8 @@ class Fragmentor:
 
     def add_condition(self, condition: AbstractCondition, fragment: bool = False) -> None:
         if fragment:
+            if self.fragments is None:
+                raise ValueError("Fragment lengths were not set, so there is no fragment level")
             self.fragments.add_condition(condition)
         else:
             self.segments.add_condition(condition)
@@ -213,8 +199,9 @@ class Fragmentor:
 
     def _with_sentinels(self, overlaps: Overlaps) -> tuple[np.ndarray, np.ndarray]:
         """Candidates bracketed by zero-length overlaps at each end of the sequence."""
-        starts = np.concatenate(([0], overlaps.starts, [self.seq_len]))
-        ends = np.concatenate(([0], overlaps.ends, [self.seq_len]))
+        candidates = np.array(overlaps.candidates, dtype=np.int64).reshape(-1, 2)
+        starts = np.concatenate(([0], candidates[:, 0], [self.seq_len]))
+        ends = np.concatenate(([0], candidates[:, 1], [self.seq_len]))
         return starts, ends
 
     @staticmethod
