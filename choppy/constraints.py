@@ -20,7 +20,16 @@ def encode_kmers(seq: str, kmer: int) -> np.ndarray:
 
 @dataclass(frozen=True)
 class OverlapGrid:
-    """Helper class to convert between overlap coordinates and condition map cells."""
+    """Converts between overlap coordinates and condition map cells.
+
+    Row i is the overlap start, column j the overlap length offset from min_len, so cell
+    (i, j) is the overlap (i, i + min_len + j). min_len and max_len are overlap lengths,
+    not segment or fragment lengths.
+
+    `cell` and `overlap` take scalars or arrays. The whole grid at once is `starts` (a
+    column), `lengths` (a row) and `ends` (the full grid the two broadcast to), so a rule
+    over every overlap is written as one expression instead of rebuilt index arithmetic.
+    """
     seq_len: int
     min_len: int
     max_len: int
@@ -29,22 +38,48 @@ class OverlapGrid:
     def shape(self) -> tuple[int, int]:
         return (self.seq_len - self.min_len + 1, self.max_len - self.min_len + 1)
 
-    def cell(self, start: int, end: int) -> tuple[int, int]:
+    def cell(self, start, end):
         """Convert an overlap (start, end) to a cell in the condition map."""
-        length = end - start
-        if length < self.min_len or length > self.max_len:
+        length = np.subtract(end, start)
+        if np.any(length < self.min_len) or np.any(length > self.max_len):
             raise ValueError(f"Overlap length {length} is out of bounds [{self.min_len}, {self.max_len}]")
         i = start
         j = length - self.min_len
         return i, j
 
-    def overlap(self, i: int, j: int) -> tuple[int, int]:
+    def overlap(self, i, j):
         """Convert a cell in the condition map to an overlap (start, end)."""
-        if i < 0 or i >= self.shape[0] or j < 0 or j >= self.shape[1]:
+        n_starts, n_lens = self.shape
+        if np.any(np.less(i, 0)) or np.any(np.greater_equal(i, n_starts)) \
+                or np.any(np.less(j, 0)) or np.any(np.greater_equal(j, n_lens)):
             raise ValueError(f"Cell ({i}, {j}) is out of bounds {self.shape}")
         start = i
         end = start + self.min_len + j
         return start, end
+
+    @property
+    def starts(self) -> np.ndarray:
+        """Overlap start of each row, shaped (n_starts, 1) to broadcast over the grid."""
+        return np.arange(self.shape[0], dtype=np.int64)[:, None]
+
+    @property
+    def lengths(self) -> np.ndarray:
+        """Overlap length of each column, shaped (1, n_lens) to broadcast over the grid."""
+        return np.arange(self.min_len, self.max_len + 1, dtype=np.int64)[None, :]
+
+    @property
+    def ends(self) -> np.ndarray:
+        """Overlap end of every cell, shaped (n_starts, n_lens)."""
+        return self.starts + self.lengths
+
+    @property
+    def inside(self) -> np.ndarray:
+        """Cells whose overlap ends within the sequence."""
+        return self.ends <= self.seq_len
+
+    def edge_mask(self, min_edge_len: int) -> np.ndarray:
+        """Cells leaving at least min_edge_len of sequence beyond the overlap at both ends."""
+        return (self.ends >= min_edge_len) & (self.starts <= self.seq_len - min_edge_len)
 
 @dataclass
 class OverlapMap:
@@ -63,16 +98,34 @@ class AbstractCondition(ABC):
     min_val: np.float16 | None = None
     max_val: np.float16 | None = None
     opt_val: np.float16 | None = None
+    grid: OverlapGrid | None = field(default=None, init=False, repr=False)
     map: OverlapMap | None = field(default=None, init=False, repr=False)
 
-    def build_map(self, seq: str, min_len: int, max_len: int) -> OverlapMap:
-        grid = OverlapGrid(len(seq), min_len, max_len)
-        self.map = OverlapMap(grid, np.full(grid.shape, 0.0, dtype=np.float16))
-        self._fill_map(seq, grid)
+    def bind(self, grid: OverlapGrid) -> None:
+        """Attach the grid this condition is scored on, normally by the owning Overlaps."""
+        if self.grid is not None and self.grid != grid:
+            raise ValueError(
+                f"Condition is already bound to {self.grid}, cannot rebind to {grid}. "
+                f"Use a separate instance for the other level."
+            )
+        self.grid = grid
+
+    def build_map(self, seq: str, grid: OverlapGrid | None = None) -> OverlapMap:
+        """Score this condition over every overlap of the grid it is bound to."""
+        if grid is not None:
+            self.bind(grid)
+        if self.grid is None:
+            raise ValueError("No grid bound: pass one to build_map, or call bind first")
+        if len(seq) != self.grid.seq_len:
+            raise ValueError(
+                f"Sequence is {len(seq)} long but the bound grid is for {self.grid.seq_len}"
+            )
+        self.map = OverlapMap(self.grid, np.full(self.grid.shape, 0.0, dtype=np.float16))
+        self._fill_map(seq)
         return self.map
 
     @abstractmethod
-    def _fill_map(self, seq: str, grid: OverlapGrid) -> None: ...
+    def _fill_map(self, seq: str) -> None: ...
 
     def feasible(self) -> np.ndarray:
         """Boolean mask of the overlaps that satisfy this condition as a constraint.
@@ -91,13 +144,14 @@ class AbstractCondition(ABC):
             ok &= values <= self.max_val
         return ok
 
-class PolyX(AbstractCondition):
-
-    def score(self, seq: str) -> np.float16:
-        return np.float16(len(seq) > self.max_len)
-
-    def _fill_map(self, seq: str, grid: OverlapGrid) -> None:
-        self.map.values[0, 0] = self.score(seq)
+## TODO: rewrite against the condition's own thresholds (max_val) and fill the whole map
+# class PolyX(AbstractCondition):
+#
+#     def score(self, seq: str) -> np.float16:
+#         return np.float16(len(seq) > self.max_len)
+#
+#     def _fill_map(self, seq: str) -> None:
+#         self.map.values[0, 0] = self.score(seq)
 
 @dataclass
 class BackgroundKmers:
@@ -167,7 +221,8 @@ class KmerHomology(AbstractCondition):
     @abstractmethod
     def _kmer_scores(self, seq: str) -> np.ndarray: ...
 
-    def _fill_map(self, seq: str, grid: OverlapGrid) -> None:
+    def _fill_map(self, seq: str) -> None:
+        grid = self.grid
         scores = self._kmer_scores(seq)
         padded = np.concatenate([scores, np.full(grid.max_len - grid.min_len, np.nan, dtype=np.float16)])
         windows = np.lib.stride_tricks.sliding_window_view(padded, grid.max_len - self.kmer + 1)
@@ -210,8 +265,9 @@ class SelfHomology(KmerHomology):
 class BoundaryMotif(AbstractCondition):
     motif: str = "GC"
 
-    def _fill_map(self, seq: str, grid: OverlapGrid) -> None:
-        n_starts, n_lens = grid.shape
+    def _fill_map(self, seq: str) -> None:
+        grid = self.grid
+        n_starts = grid.shape[0]
         matches = list(re.finditer(self.motif, seq))
         starts = np.array([m.start() for m in matches], dtype=np.int64)
         ends = np.array([m.end() for m in matches], dtype=np.int64)
@@ -222,10 +278,8 @@ class BoundaryMotif(AbstractCondition):
         closes = np.zeros(grid.seq_len + 1, dtype=bool)
         closes[ends] = True
 
-        i = np.arange(n_starts)[:, None]
-        j = np.arange(n_lens)[None, :]
-        stop = i + grid.min_len + j
-        inside = stop <= grid.seq_len
+        stop = grid.ends
+        inside = grid.inside
         shuts = closes[np.minimum(stop, grid.seq_len)]
 
         bounded = opens[:, None] & shuts

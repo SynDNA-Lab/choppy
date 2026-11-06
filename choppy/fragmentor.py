@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field, InitVar
 import numpy as np
-from choppy.constraints import AbstractCondition
+from choppy.constraints import AbstractCondition, OverlapGrid
 
 
 class NoAssemblyError(RuntimeError):
@@ -9,12 +9,7 @@ class NoAssemblyError(RuntimeError):
 
 @dataclass
 class Overlaps:
-    """Every potential overlap of a sequence, together with the conditions scored on it.
-
-    Each condition's map carries the grid that converts between an overlap (start, end)
-    and the cell that scores it, so a candidate overlap is a cell. Candidates are the
-    cells that satisfy all constraints at once.
-    """
+    """Every potential overlap of a sequence, together with the conditions scored on it."""
     seq: str
     min_len: int # miminal overlap length
     max_len: int # maximal overlap length
@@ -24,17 +19,21 @@ class Overlaps:
     constraints: list[AbstractCondition] = field(default_factory=list)
     candidates: list[tuple[int, int]] = field(default_factory=list)
 
-    shape: tuple[int, int] = field(init=False, repr=False)
+    grid: OverlapGrid = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self.shape = (len(self.seq) - self.min_len + 1, self.max_len - self.min_len + 1)
+        self.grid = OverlapGrid(len(self.seq), self.min_len, self.max_len)
         if self.min_step is not None and self.min_step <= 0:
             raise ValueError(f"min_step must be positive, got {self.min_step}")
         if self.min_step == 1:
             self.min_step = None  # no thinning needed if min_step is 1
 
+    @property
+    def shape(self) -> tuple[int, int]:
+        return self.grid.shape
+
     def add_condition(self, condition: AbstractCondition) -> None:
-        condition.build_map(self.seq, self.min_len, self.max_len)
+        condition.build_map(self.seq, self.grid)
         if condition.opt_val is not None:
             self.objectives.append(condition)
         if condition.min_val is not None or condition.max_val is not None:
@@ -56,28 +55,29 @@ class Overlaps:
             return mask
 
         offsets = []
-        for i in range(self.min_step // 2):
-            for j in range(self.min_step - i * 2):
-                offsets.append((i, j))
-        offsets.pop(0)  # don't include (0, 0) because it would always be kept
+        for i in range(1, self.min_step):
+            for j in range(self.min_step - i):
+                offsets.append((i, -i + j))
+                if j > 0:
+                    offsets.append((i, -i - j))
         offsets = np.array(offsets)
 
-        for i in range(mask.shape[0]):
-            for j in range(mask.shape[1]):
-                if not mask[i, j]:
-                    continue
+        for i, j in np.argwhere(mask):
+            if not mask[i, j]:
+                continue
 
-                rows, cols = i + offsets[:, 0], j + offsets[:, 1]
-                inside = (rows < mask.shape[0]) & (cols < mask.shape[1])
-                mask[rows[inside], cols[inside]] = False
+            rows, cols = i + offsets[:, 0], j + offsets[:, 1]
+            inside = (rows < mask.shape[0]) & (cols < mask.shape[1])
+            mask[rows[inside], cols[inside]] = False
         return mask
 
-    def generate_candidates(self) -> list[tuple[int, int]]:
+    def generate_candidates(self, min_edge_len: int) -> list[tuple[int, int]]:
         """Potential overlaps as (start, end), sorted by start then end."""
-        mask = self._thin(self.feasible_mask())
+        mask = self.feasible_mask() & self.grid.edge_mask(min_edge_len)
+        mask = self._thin(mask)
 
-        rows, cols = np.nonzero(mask)
-        self.candidates = list(zip(rows.tolist(), (rows + self.min_len + cols).tolist()))
+        starts, ends = self.grid.overlap(*np.nonzero(mask))
+        self.candidates = list(zip(starts.tolist(), ends.tolist()))
 
         return self.candidates
 
@@ -97,19 +97,19 @@ class Fragmentor:
     seq: str
     min_segment_overlap_len: InitVar[int]
     max_segment_overlap_len: InitVar[int]
-    min_segment_len: InitVar[int]
-    max_segment_len: InitVar[int]
+    min_segment_len: int
+    max_segment_len: int
     min_fragment_overlap_len: InitVar[int | None] = None
     max_fragment_overlap_len: InitVar[int | None] = None
-    min_fragment_len: InitVar[int | None] = None
-    max_fragment_len: InitVar[int | None] = None
+    min_fragment_len: int | None = None
+    max_fragment_len: int | None = None
     min_step: int | None = None
 
-    fragments: Overlaps | None = field(init=False, repr=False)
-    segments: Overlaps = field(init=False, repr=False)
+    fragment_overlaps: Overlaps | None = field(init=False, repr=False)
+    segment_overlaps: Overlaps = field(init=False, repr=False)
 
-    def __post_init__(self, min_segment_overlap_len, max_segment_overlap_len, min_segment_len, max_segment_len,
-                 min_fragment_overlap_len, max_fragment_overlap_len, min_fragment_len, max_fragment_len):
+    def __post_init__(self, min_segment_overlap_len, max_segment_overlap_len,
+                 min_fragment_overlap_len, max_fragment_overlap_len):
         self.seq = self.seq.upper()
         self.seq_len = len(self.seq)
 
@@ -117,15 +117,15 @@ class Fragmentor:
             "segment",
             min_segment_overlap_len,
             max_segment_overlap_len,
-            min_segment_len,
-            max_segment_len,
+            self.min_segment_len,
+            self.max_segment_len,
         )
 
         fragment_params = (
             min_fragment_overlap_len,
             max_fragment_overlap_len,
-            min_fragment_len,
-            max_fragment_len,
+            self.min_fragment_len,
+            self.max_fragment_len,
         )
         n_set = sum(p is not None for p in fragment_params)
         if n_set not in (0, 4):
@@ -134,15 +134,10 @@ class Fragmentor:
         if self.use_fragments:
             self._check_lengths("fragment", *fragment_params)
 
-        self.min_segment_len = min_segment_len
-        self.max_segment_len = max_segment_len
-        self.min_fragment_len = min_fragment_len
-        self.max_fragment_len = max_fragment_len
-
-        self.fragments = Overlaps(self.seq, min_fragment_overlap_len, max_fragment_overlap_len,
-                                  self.min_step) if self.use_fragments else None
-        self.segments = Overlaps(self.seq, min_segment_overlap_len, max_segment_overlap_len,
-                                 self.min_step)
+        self.fragment_overlaps = Overlaps(self.seq, min_fragment_overlap_len, max_fragment_overlap_len,
+                                          self.min_step) if self.use_fragments else None
+        self.segment_overlaps = Overlaps(self.seq, min_segment_overlap_len, max_segment_overlap_len,
+                                         self.min_step)
 
     @staticmethod
     def _check_lengths(name: str, min_overlap_len, max_overlap_len, min_len, max_len) -> None:
@@ -176,16 +171,16 @@ class Fragmentor:
 
     def add_condition(self, condition: AbstractCondition, fragment: bool = False) -> None:
         if fragment:
-            if self.fragments is None:
+            if self.fragment_overlaps is None:
                 raise ValueError("Fragment lengths were not set, so there is no fragment level")
-            self.fragments.add_condition(condition)
+            self.fragment_overlaps.add_condition(condition)
         else:
-            self.segments.add_condition(condition)
+            self.segment_overlaps.add_condition(condition)
 
     def cut(self) -> Assembly:
         """Cut the sequence into the fewest segments whose overlaps all satisfy the constraints."""
-        self.segments.generate_candidates()
-        starts, ends = self._with_sentinels(self.segments)
+        self.segment_overlaps.generate_candidates(self.min_segment_len)
+        starts, ends = self._with_sentinels(self.segment_overlaps)
 
         weights, back = self._shortest_path(starts, ends, self.min_segment_len, self.max_segment_len)
         if not np.isfinite(weights[-1]):
