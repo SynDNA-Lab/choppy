@@ -72,13 +72,11 @@ class OverlapGrid:
         """Overlap end of every cell, shaped (n_starts, n_lens)."""
         return self.starts + self.lengths
 
-    @property
-    def inside(self) -> np.ndarray:
-        """Cells whose overlap ends within the sequence."""
-        return self.ends <= self.seq_len
-
     def edge_mask(self, min_edge_len: int) -> np.ndarray:
-        """Cells leaving at least min_edge_len of sequence beyond the overlap at both ends."""
+        """
+        Cells that represent overlaps that can never potentially be used since they
+        correspond to a segment/fragment that is shroter than the provided minimum.
+        """
         return (self.ends >= min_edge_len) & (self.starts <= self.seq_len - min_edge_len)
 
 @dataclass
@@ -111,7 +109,11 @@ class AbstractCondition(ABC):
         self.grid = grid
 
     def build_map(self, seq: str, grid: OverlapGrid | None = None) -> OverlapMap:
-        """Score this condition over every overlap of the grid it is bound to."""
+        """Score this condition over every overlap of the grid it is bound to.
+
+        Scores run from 0 to 1 (times an optional multiplier). 0 is always the best score,
+        1 is the worst.
+        """
         if grid is not None:
             self.bind(grid)
         if self.grid is None:
@@ -120,7 +122,7 @@ class AbstractCondition(ABC):
             raise ValueError(
                 f"Sequence is {len(seq)} long but the bound grid is for {self.grid.seq_len}"
             )
-        self.map = OverlapMap(self.grid, np.full(self.grid.shape, 0.0, dtype=np.float16))
+        self.map = OverlapMap(self.grid, np.full(self.grid.shape, 1.0, dtype=np.float16))
         self._fill_map(seq)
         return self.map
 
@@ -131,15 +133,17 @@ class AbstractCondition(ABC):
         """Boolean mask of the overlaps that satisfy this condition as a constraint.
 
         min_val is a floor, max_val a ceiling; a condition with neither set is not a
-        constraint and admits everything. NaN entries (overlaps running past the end of
-        the sequence) are never feasible.
+        constraint and admits everything. A NaN score fails both comparisons, so it is
+        infeasible without a separate check for it.
         """
         if self.map is None:
             raise ValueError("build_map must be called before feasible")
         values = self.map.values
-        ok = ~np.isnan(values)
-        if self.min_val is not None:
-            ok &= values >= self.min_val
+        if self.min_val is None and self.max_val is None:
+            return np.ones(values.shape, dtype=bool)
+        if self.min_val is None:
+            return values <= self.max_val
+        ok = values >= self.min_val
         if self.max_val is not None:
             ok &= values <= self.max_val
         return ok
@@ -222,9 +226,15 @@ class KmerHomology(AbstractCondition):
     def _kmer_scores(self, seq: str) -> np.ndarray: ...
 
     def _fill_map(self, seq: str) -> None:
+        """Worst kmer score over each overlap, as a running max along the length axis.
+
+        The pad gives the sliding window one row per overlap start; it is filled with 1.0,
+        the worst score, and the running max reaches it exactly on the cells whose overlap
+        ends past the end of the sequence.
+        """
         grid = self.grid
         scores = self._kmer_scores(seq)
-        padded = np.concatenate([scores, np.full(grid.max_len - grid.min_len, np.nan, dtype=np.float16)])
+        padded = np.concatenate([scores, np.full(grid.max_len - grid.min_len, 1.0, dtype=np.float16)])
         windows = np.lib.stride_tricks.sliding_window_view(padded, grid.max_len - self.kmer + 1)
         self.map.values[:] = np.maximum.accumulate(windows, axis=1)[:, grid.min_len - self.kmer:]
 
@@ -278,10 +288,10 @@ class BoundaryMotif(AbstractCondition):
         closes = np.zeros(grid.seq_len + 1, dtype=bool)
         closes[ends] = True
 
-        stop = grid.ends
-        inside = grid.inside
-        shuts = closes[np.minimum(stop, grid.seq_len)]
+        # clamped because the grid holds cells whose overlap ends past the sequence;
+        # their score is meaningless but edge_mask drops them before they are used.
+        shuts = closes[np.minimum(grid.ends, grid.seq_len)]
 
         bounded = opens[:, None] & shuts
-        self.map.values[:] = np.where(inside, ~bounded, np.nan).astype(np.float16)
+        self.map.values[:] = (~bounded).astype(np.float16)
 

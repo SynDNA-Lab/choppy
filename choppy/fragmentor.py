@@ -141,6 +141,13 @@ class Fragmentor:
 
     @staticmethod
     def _check_lengths(name: str, min_overlap_len, max_overlap_len, min_len, max_len) -> None:
+        """Validate one level's four lengths.
+
+        min_len > 2 * max_overlap_len is the load-bearing one: besides being the geometric
+        requirement, it is what lets OverlapGrid.edge_mask(min_len) stand in for a separate
+        check that an overlap ends inside the sequence, so conditions never have to mask
+        off the cells that run past the end.
+        """
         values = {
             f"min_{name}_overlap_len": min_overlap_len,
             f"max_{name}_overlap_len": max_overlap_len,
@@ -158,13 +165,11 @@ class Fragmentor:
             raise ValueError(
                 f"min_{name}_overlap_len ({min_overlap_len}) > max_{name}_overlap_len ({max_overlap_len})"
             )
-        if min_len <= 2 * min_overlap_len:
+        if min_len <= 2 * max_overlap_len:
             raise ValueError(
-                f"min_{name}_len ({min_len}) must be > 2 * min_{name}_overlap_len ({min_overlap_len})"
-            )
-        if max_len <= 2 * max_overlap_len:
-            raise ValueError(
-                f"max_{name}_len ({max_len}) must be > 2 * max_{name}_overlap_len ({max_overlap_len})"
+                f"min_{name}_len ({min_len}) must be > 2 * max_{name}_overlap_len "
+                f"({max_overlap_len}): a {name} has to hold a maximal overlap at each end "
+                f"without the two meeting"
             )
         if max_len <= min_len:
             raise ValueError(f"max_{name}_len ({max_len}) must be > min_{name}_len ({min_len})")
