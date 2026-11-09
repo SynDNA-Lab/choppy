@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from choppy.constraints import AbstractCondition, BoundaryMotif, OverlapGrid
-from choppy.fragmentor import Fragmentor, Overlaps
+from choppy.fragmentor import Fragmentor, GapError, NoAssemblyError, Overlaps
 
 
 class ConstCondition(AbstractCondition):
@@ -405,3 +405,51 @@ def test_fragmentor_validates_once_for_every_grid():
     for overlaps in (f.segment_overlaps, f.fragment_overlaps):
         assert overlaps.grid.max_len <= overlaps.grid.seq_len
         assert overlaps.grid.shape[0] > 0 and overlaps.grid.shape[1] > 0
+
+
+# --------------------------------------------------------------------------- gap check
+
+
+class BlockRegion(AbstractCondition):
+    """Rejects every overlap that touches [a, b)."""
+
+    def __init__(self, a, b):
+        super().__init__(max_val=0.5)
+        self.a, self.b = a, b
+
+    def _fill_map(self, seq):
+        touches = (self.grid.starts < self.b) & (self.grid.ends > self.a)
+        self.map.values[:] = touches
+
+
+@pytest.mark.parametrize("a", [300, 500])
+def test_chop_reports_unbridgeable_gap(a):
+    # SEG: a segment across an interior gap is >= gap + 2 * 20 bp, so 161 bp beats 200
+    f = Fragmentor(random_seq(1000), **SEG)
+    f.add_condition(BlockRegion(a, a + 161))
+    with pytest.raises(GapError, match="add candidate overlaps manually") as info:
+        f.chop()
+    assert info.value.gaps == [(a, a + 161)]
+    assert f"[{a}, {a + 161}): 161 bp" in str(info.value)
+    assert isinstance(info.value, NoAssemblyError)
+
+
+def test_chop_bridges_gap_just_under_the_limit():
+    f = Fragmentor(random_seq(1000), **SEG)
+    f.add_condition(BlockRegion(500, 660))
+    asm = f.chop()
+    assert asm.segments[0][0] == 0 and asm.segments[-1][1] == 1000
+
+
+def test_chop_reports_whole_sequence_without_candidates():
+    f = Fragmentor(random_seq(1000), **SEG)
+    f.add_condition(ConstCondition(fill=1.0, max_val=0.5))
+    with pytest.raises(GapError) as info:
+        f.chop()
+    assert info.value.gaps == [(0, 1000)]
+
+
+def test_chop_short_sequence_needs_no_candidates():
+    f = Fragmentor(random_seq(150), **SEG)
+    f.add_condition(ConstCondition(fill=1.0, max_val=0.5))
+    assert f.chop().segments == [(0, 150)]

@@ -8,6 +8,19 @@ class NoAssemblyError(RuntimeError):
     """Raised when no chain of overlaps spans the sequence."""
 
 
+class GapError(NoAssemblyError):
+    """Raised when stretches of the sequence lack candidate overlaps for longer than any
+    segment can bridge.
+
+    gaps holds the offending regions as (start, end), sorted by start, so callers can act
+    on them (add candidates there, relax the constraints, or add local rules).
+    """
+
+    def __init__(self, message: str, gaps: list[tuple[int, int]]):
+        super().__init__(message)
+        self.gaps = gaps
+
+
 @dataclass
 class Overlaps:
     """Every potential overlap of a sequence, together with the conditions scored on it."""
@@ -311,12 +324,71 @@ class Fragmentor:
         else:
             return self.segment_overlaps.plot_rows(indices, a, b)
 
+    def gap_check(self, fragment: bool = False, min_gap_len: int = None) -> None:
+        """Raise GapError if some stretch without candidate overlaps is too long to bridge.
+
+        A gap is a region [a, b) that no candidate overlap touches. A segment across an
+        interior gap opens on an overlap ending at or before a and closes on one starting
+        at or after b, so it is at least (b - a) + 2 * min_len long; at either end of the
+        sequence one side is the sequence edge instead, which saves one min_len. A gap
+        whose shortest crossing segment is still longer than max_len rules out every
+        assembly, whatever the rest of the chain looks like. (Fragments alike, with the
+        fragment lengths.)
+
+        Passing min_gap_len replaces that rule: every gap at least min_gap_len long is
+        reported.
+        """
+        name = "fragment" if fragment else "segment"
+        if fragment:
+            if self.fragment_overlaps is None:
+                raise ValueError("Fragment lengths were not set, so there is no fragment level")
+            overlaps, max_len = self.fragment_overlaps, self.max_fragment_len
+        else:
+            overlaps, max_len = self.segment_overlaps, self.max_segment_len
+        min_ov = overlaps.min_len
+
+        # interior gaps need the least to be unbridgeable; edge gaps are filtered below
+        threshold = max_len - 2 * min_ov + 1 if min_gap_len is None else min_gap_len
+        if overlaps.candidates:
+            # plain ints: np.bool_ + np.bool_ is a logical or, which would break `sides`
+            regions = [(int(a), int(b)) for a, b in overlaps.get_gapped_regions(threshold)]
+        else:
+            regions = [(0, self.seq_len)] if self.seq_len >= threshold else []
+
+        if min_gap_len is None:
+            gaps = []
+            for a, b in regions:
+                sides = (a > 0) + (b < self.seq_len)  # sides that must close on an overlap
+                if (b - a) + sides * min_ov > max_len:
+                    gaps.append((a, b))
+        else:
+            gaps = regions
+        if not gaps:
+            return
+
+        if min_gap_len is None:
+            why = (f"over a stretch too long for any {name} of at most {max_len} bp to "
+                   f"bridge, so no assembly exists")
+        else:
+            why = f"over a stretch of at least {min_gap_len} bp"
+        lines = "\n".join(f"  [{a}, {b}): {b - a} bp" for a, b in gaps)
+        raise GapError(
+            f"{len(gaps)} region(s) of the sequence have no candidate {name} overlaps "
+            f"{why}:\n{lines}\n"
+            f"To get past them, for each region either add candidate overlaps manually, "
+            f"relax the existing constraints, or add relaxed local rules for the affected "
+            f"region.",
+            gaps,
+        )
+
     def chop(self) -> Assembly:
         """Cut the sequence into the fewest segments whose overlaps all satisfy the constraints."""
         
         self.generate_candidates(fragment=False)
+        self.gap_check(fragment=False)
         if self.fragment_overlaps is not None:
             self.generate_candidates(fragment=True)
+            self.gap_check(fragment=True)
 
         starts, ends = self._with_sentinels(self.segment_overlaps)
 
