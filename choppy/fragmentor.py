@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field, InitVar
+import warnings
 import numpy as np
-from choppy.constraints import AbstractCondition, OverlapGrid
+from choppy.constraints import AbstractCondition, OverlapGrid, check_seq
 
 
 class NoAssemblyError(RuntimeError):
@@ -23,8 +24,6 @@ class Overlaps:
 
     def __post_init__(self) -> None:
         self.grid = OverlapGrid(len(self.seq), self.min_len, self.max_len)
-        if self.min_step is not None and self.min_step <= 0:
-            raise ValueError(f"min_step must be positive, got {self.min_step}")
         if self.min_step == 1:
             self.min_step = None  # no thinning needed if min_step is 1
 
@@ -55,11 +54,13 @@ class Overlaps:
             return mask
 
         offsets = []
-        for i in range(1, self.min_step):
+        for i in range(self.min_step):
             for j in range(self.min_step - i):
                 offsets.append((i, -i + j))
                 if j > 0:
                     offsets.append((i, -i - j))
+                    
+        offsets.pop(0)  # don't mask the overlap itself
         offsets = np.array(offsets)
 
         for i, j in np.argwhere(mask):
@@ -67,7 +68,7 @@ class Overlaps:
                 continue
 
             rows, cols = i + offsets[:, 0], j + offsets[:, 1]
-            inside = (rows < mask.shape[0]) & (cols < mask.shape[1])
+            inside = (rows < mask.shape[0]) & (cols < mask.shape[1]) & (rows >= 0) & (cols >= 0)
             mask[rows[inside], cols[inside]] = False
         return mask
 
@@ -110,10 +111,13 @@ class Fragmentor:
 
     def __post_init__(self, min_segment_overlap_len, max_segment_overlap_len,
                  min_fragment_overlap_len, max_fragment_overlap_len):
-        self.seq = self.seq.upper()
+        self.seq = check_seq(self.seq.upper())
         self.seq_len = len(self.seq)
 
-        self._check_lengths(
+        if self.min_step is not None and self.min_step <= 0:
+            raise ValueError(f"min_step must be positive, got {self.min_step}")
+
+        max_segment_overlap_len = self._check_lengths(
             "segment",
             min_segment_overlap_len,
             max_segment_overlap_len,
@@ -132,7 +136,27 @@ class Fragmentor:
             raise ValueError("Fragment lengths must be either all set or all None")
         self.use_fragments = n_set == 4
         if self.use_fragments:
-            self._check_lengths("fragment", *fragment_params)
+            max_fragment_overlap_len = self._check_lengths("fragment", *fragment_params)
+            if self.min_fragment_len > self.min_segment_len:
+                raise ValueError(
+                    f"min_fragment_len ({self.min_fragment_len}) must be <= min_segment_len "
+                    f"({self.min_segment_len}): a fragment is a piece of a segment"
+                )
+            if self.max_fragment_len > self.max_segment_len:
+                warnings.warn(
+                    f"max_fragment_len ({self.max_fragment_len}) is longer than "
+                    f"max_segment_len ({self.max_segment_len}): a fragment is a piece of a "
+                    f"segment. Lowering it to {self.max_segment_len}.",
+                    stacklevel=3,
+                )
+                # still > min_fragment_len, which is <= min_segment_len < max_segment_len
+                self.max_fragment_len = self.max_segment_len
+
+        if self.seq_len < self.min_segment_len:
+            raise ValueError(
+                f"Sequence is {self.seq_len} bp, shorter than min_segment_len "
+                f"({self.min_segment_len}): there is nothing to cut"
+            )
 
         self.fragment_overlaps = Overlaps(self.seq, min_fragment_overlap_len, max_fragment_overlap_len,
                                           self.min_step) if self.use_fragments else None
@@ -140,8 +164,8 @@ class Fragmentor:
                                          self.min_step)
 
     @staticmethod
-    def _check_lengths(name: str, min_overlap_len, max_overlap_len, min_len, max_len) -> None:
-        """Validate one level's four lengths.
+    def _check_lengths(name: str, min_overlap_len, max_overlap_len, min_len, max_len) -> int:
+        """Validate one level's four lengths; return max_overlap_len, lowered if needed.
 
         min_len > 2 * max_overlap_len is the load-bearing one: besides being the geometric
         requirement, it is what lets OverlapGrid.edge_mask(min_len) stand in for a separate
@@ -165,14 +189,25 @@ class Fragmentor:
             raise ValueError(
                 f"min_{name}_overlap_len ({min_overlap_len}) > max_{name}_overlap_len ({max_overlap_len})"
             )
-        if min_len <= 2 * max_overlap_len:
-            raise ValueError(
-                f"min_{name}_len ({min_len}) must be > 2 * max_{name}_overlap_len "
-                f"({max_overlap_len}): a {name} has to hold a maximal overlap at each end "
-                f"without the two meeting"
-            )
         if max_len <= min_len:
             raise ValueError(f"max_{name}_len ({max_len}) must be > min_{name}_len ({min_len})")
+        if min_len <= 2 * max_overlap_len:
+            longest = (min_len - 1) // 2  # the largest m with min_len > 2 * m
+            if min_overlap_len > longest:
+                raise ValueError(
+                    f"min_{name}_overlap_len ({min_overlap_len}) leaves no room in a "
+                    f"min_{name}_len ({min_len}) {name}: a {name} has to hold an overlap at "
+                    f"each end without the two meeting, so no overlap may be longer than "
+                    f"{longest}"
+                )
+            warnings.warn(
+                f"max_{name}_overlap_len ({max_overlap_len}) is too long for "
+                f"min_{name}_len ({min_len}): a {name} has to hold a maximal overlap at "
+                f"each end without the two meeting. Lowering it to {longest}.",
+                stacklevel=4,
+            )
+            return longest
+        return max_overlap_len
 
     def add_condition(self, condition: AbstractCondition, fragment: bool = False) -> None:
         if fragment:

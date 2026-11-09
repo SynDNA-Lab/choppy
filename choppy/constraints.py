@@ -1,14 +1,52 @@
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
+import warnings
 import numpy as np
 from Bio import SeqIO
 import re
+
+ALPHABET = "ACGT"
 
 def reverse_complement(seq: str) -> str:
     complement = str.maketrans("ACGT", "TGCA")
     return seq.translate(complement)[::-1]
 
+def invalid_bases(seq: str) -> np.ndarray:
+    """Positions of the characters of seq that are not A, C, G or T."""
+    known = np.zeros(256, dtype=bool)
+    for b in ALPHABET.encode(): known[b] = True
+    return np.flatnonzero(~known[np.frombuffer(seq.encode(), np.uint8)])
+
+def check_seq(seq: str, name: str = "Sequence") -> str:
+    """Return seq unchanged, or raise if it holds anything but A, C, G and T.
+
+    Ambiguity codes are not supported anywhere in choppy: `encode_kmers` has only two bits
+    per base, so an unknown base would silently alias a real kmer. Callers that take a
+    sequence from outside uppercase it first.
+    """
+    bad = invalid_bases(seq)
+    if bad.size:
+        found = sorted({seq[p] for p in bad})
+        raise ValueError(
+            f"{name} contains {bad.size} character(s) outside {ALPHABET}: {found}, "
+            f"first at position {int(bad[0])}. Ambiguity codes are not supported."
+        )
+    return seq
+
+def valid_kmers(seq: str, kmer: int) -> np.ndarray:
+    """Mask of the kmers of seq, True where the kmer is made only of A, C, G and T."""
+    bad = np.zeros(len(seq), dtype=np.int64)
+    bad[invalid_bases(seq)] = 1
+    cumulative = np.concatenate(([0], np.cumsum(bad)))
+    return (cumulative[kmer:] - cumulative[:-kmer]) == 0
+
 def encode_kmers(seq: str, kmer: int) -> np.ndarray:
+    """Base-4 code of every kmer of seq.
+
+    Only A, C, G and T are encoded; any other character makes the codes of the kmers
+    covering it meaningless, so callers either reject such a sequence with `check_seq` or
+    drop those kmers with `valid_kmers`.
+    """
     lut = np.full(256, 255, np.uint8)
     for i, b in enumerate(b"ACGT"): lut[b] = i
     codes = lut[np.frombuffer(seq.encode(), np.uint8)]
@@ -38,6 +76,13 @@ class OverlapGrid:
     def shape(self) -> tuple[int, int]:
         return (self.seq_len - self.min_len + 1, self.max_len - self.min_len + 1)
 
+    def check_cell(self, i, j) -> None:
+        """Raise unless (i, j) is a cell of this grid. Takes scalars or arrays."""
+        n_starts, n_lens = self.shape
+        if np.any(np.less(i, 0)) or np.any(np.greater_equal(i, n_starts)) \
+                or np.any(np.less(j, 0)) or np.any(np.greater_equal(j, n_lens)):
+            raise ValueError(f"Cell ({i}, {j}) is out of bounds {self.shape}")
+
     def cell(self, start, end):
         """Convert an overlap (start, end) to a cell in the condition map."""
         length = np.subtract(end, start)
@@ -45,14 +90,14 @@ class OverlapGrid:
             raise ValueError(f"Overlap length {length} is out of bounds [{self.min_len}, {self.max_len}]")
         i = start
         j = length - self.min_len
+        # the end is deliberately not bounded: the grid holds cells whose overlap runs past
+        # the end of the sequence, and edge_mask is what drops them.
+        self.check_cell(i, j)
         return i, j
 
     def overlap(self, i, j):
         """Convert a cell in the condition map to an overlap (start, end)."""
-        n_starts, n_lens = self.shape
-        if np.any(np.less(i, 0)) or np.any(np.greater_equal(i, n_starts)) \
-                or np.any(np.less(j, 0)) or np.any(np.greater_equal(j, n_lens)):
-            raise ValueError(f"Cell ({i}, {j}) is out of bounds {self.shape}")
+        self.check_cell(i, j)
         start = i
         end = start + self.min_len + j
         return start, end
@@ -85,6 +130,7 @@ class OverlapMap:
     values: np.ndarray
 
     def get_cell(self, i: int, j: int) -> np.float16:
+        self.grid.check_cell(i, j)
         return self.values[i, j]
 
     def get_overlap(self, start: int, end: int) -> np.float16:
@@ -196,17 +242,47 @@ class BackgroundKmers:
 
     @staticmethod
     def encode_seqs(sequences: list[str] | str, kmer: int) -> np.ndarray:
+        """Count every kmer of the sequences and of their reverse complements.
+
+        Unlike the sequence being cut, a background may legitimately hold ambiguity codes
+        and assembly gaps. They cannot be encoded, so the kmers covering them are dropped
+        and reported; the rest of the background is still counted.
+        """
         if isinstance(sequences, str):
             sequences = [sequences]
+        sequences = [s.upper() for s in sequences]
 
-        sequences = sequences + [reverse_complement(s) for s in sequences]
+        too_short = [len(s) for s in sequences if len(s) < kmer]
+        if too_short:
+            warnings.warn(
+                f"{len(too_short)} background sequence(s) are shorter than kmer {kmer} "
+                f"and hold no kmer at all; they are ignored",
+                stacklevel=2,
+            )
+        sequences = [s for s in sequences if len(s) >= kmer]
+        if not sequences:
+            raise ValueError(f"No background sequence is as long as kmer {kmer}")
 
         all_codes = []
+        n_dropped = 0
         for seq in sequences:
-            enc = encode_kmers(seq, kmer)
-            all_codes.append(enc)
+            for strand in (seq, reverse_complement(seq)):
+                ok = valid_kmers(strand, kmer)
+                all_codes.append(encode_kmers(strand, kmer)[ok])
+            n_dropped += int((~valid_kmers(seq, kmer)).sum())
 
-        keys, counts = np.unique(np.concatenate(all_codes), return_counts=True)
+        if n_dropped:
+            n_bases = sum(invalid_bases(s).size for s in sequences)
+            warnings.warn(
+                f"Background holds {n_bases} base(s) outside {ALPHABET}; the "
+                f"{n_dropped} kmer(s) covering them are ignored (per strand)",
+                stacklevel=2,
+            )
+
+        pooled = np.concatenate(all_codes)
+        if pooled.size == 0:
+            raise ValueError(f"No valid {kmer}-mer in the background: every kmer holds a base outside {ALPHABET}")
+        keys, counts = np.unique(pooled, return_counts=True)
         return keys, counts
 
     def lookup(self, seq: str) -> np.ndarray:
@@ -221,6 +297,7 @@ class BackgroundKmers:
 @dataclass
 class KmerHomology(AbstractCondition):
     kmer: int = 15
+    cap: int = 2048
 
     @abstractmethod
     def _kmer_scores(self, seq: str) -> np.ndarray: ...
@@ -231,38 +308,60 @@ class KmerHomology(AbstractCondition):
         The pad gives the sliding window one row per overlap start; it is filled with 1.0,
         the worst score, and the running max reaches it exactly on the cells whose overlap
         ends past the end of the sequence.
+
+        An overlap shorter than kmer holds no complete kmer, so there is no evidence of
+        homology against it and it keeps the best score, 0. Those are the first
+        `kmer - min_len` length columns, which have no window to slide over.
         """
-        grid = self.grid
+        n_cols = self.grid.shape[1]
+        n_short = min(max(self.kmer - self.grid.min_len, 0), n_cols)
+        self.map.values[:, :n_short] = 0.0
+        if n_short == n_cols:  # kmer > max_len: no overlap is long enough to hold one
+            return
+
         scores = self._kmer_scores(seq)
-        padded = np.concatenate([scores, np.full(grid.max_len - grid.min_len, 1.0, dtype=np.float16)])
-        windows = np.lib.stride_tricks.sliding_window_view(padded, grid.max_len - self.kmer + 1)
-        self.map.values[:] = np.maximum.accumulate(windows, axis=1)[:, grid.min_len - self.kmer:]
+        padded = np.concatenate([scores, np.full(self.grid.max_len - self.grid.min_len, 1.0, dtype=np.float16)])
+        windows = np.lib.stride_tricks.sliding_window_view(padded, self.grid.max_len - self.kmer + 1)
+        accumulated = np.maximum.accumulate(windows, axis=1)
+        # column j is the overlap of length min_len + j, whose last kmer starts at
+        # offset min_len + j - kmer; the short columns above are the negative ones.
+        self.map.values[:, n_short:] = accumulated[:, max(self.grid.min_len - self.kmer, 0):]
 
 @dataclass
 class BGHomology(KmerHomology):
     bg_fasta: str | None = None
     bg_npz: str | None = None
     bg: BackgroundKmers | None = field(default=None, init=False, repr=False)
-    multiplier: float = field(init=False, repr=False)
 
     def __post_init__(self):
+        if self.cap < 1 or self.cap > 2048:
+            raise ValueError(f"cap must be between 1 and 2048, got {self.cap}")
         self._set_bg()
-        self.multiplier = np.max(self.bg.counts)
         if self.kmer != self.bg.kmer:
             raise ValueError(f"kmer mismatch: {self.kmer} != {self.bg.kmer}")
-
-    def _set_bg(self) -> BackgroundKmers:
-        if self.bg_fasta is None:
-            if self.bg_npz is None:
-                if self.bg is None:
-                    raise ValueError("No background provided")
-            else:
-                self.bg = BackgroundKmers.load(self.bg_npz)
+        max_counts = np.max(self.bg.counts)
+        if max_counts < self.cap:
+            self.cap = int(max_counts)
         else:
+            self.bg.counts = np.minimum(self.bg.counts, self.cap)
+
+    def _set_bg(self) -> None:
+        """Load the background: from the FASTA if there is one, otherwise from the npz."""
+        if self.bg_fasta is None and self.bg_npz is None:
+            raise ValueError("No background provided: set either bg_fasta or bg_npz")
+        if self.bg_fasta is not None:
+            if self.bg_npz is not None:
+                warnings.warn(
+                    "both bg_fasta and bg_npz are set; bg_fasta takes priority and "
+                    f"{self.bg_npz} is ignored",
+                    stacklevel=3,
+                )
             self.bg = BackgroundKmers.from_fasta(self.bg_fasta, self.kmer)
+        else:
+            self.bg = BackgroundKmers.load(self.bg_npz)
 
     def _kmer_scores(self, seq: str) -> np.ndarray:
-        return np.float16(self.bg.lookup(seq) / self.multiplier)
+        return np.float16(self.bg.lookup(seq) / self.cap)
 
 @dataclass
 class SelfHomology(KmerHomology):
@@ -273,14 +372,24 @@ class SelfHomology(KmerHomology):
 
 @dataclass
 class BoundaryMotif(AbstractCondition):
+    """Overlaps that both open and close on a match of the motif score 0, the rest 1.
+
+    The two ends are independent: the motif opening the overlap and the one closing it are
+    separate occurrences. The motif is matched inside a lookahead so that overlapping
+    occurrences are all found ("GG" starts at both 0 and 1 of "GGG"); note that only one
+    match is taken per position, so a motif that can match several lengths at the same
+    place ("[GC]{2,3}") contributes only its greedy end.
+    """
     motif: str = "GC"
 
     def _fill_map(self, seq: str) -> None:
         grid = self.grid
         n_starts = grid.shape[0]
-        matches = list(re.finditer(self.motif, seq))
-        starts = np.array([m.start() for m in matches], dtype=np.int64)
-        ends = np.array([m.end() for m in matches], dtype=np.int64)
+        # the lookahead keeps the match zero-width, so the scan does not skip past an
+        # occurrence that starts inside the previous one; group 1 carries the real span.
+        matches = list(re.finditer(f"(?=({self.motif}))", seq))
+        starts = np.array([m.start(1) for m in matches], dtype=np.int64)
+        ends = np.array([m.end(1) for m in matches], dtype=np.int64)
 
         opens = np.zeros(n_starts, dtype=bool)
         opens[starts[starts < n_starts]] = True
