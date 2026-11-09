@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from choppy.constraints import AbstractCondition, BoundaryMotif, OverlapGrid
-from choppy.fragmentor import Fragmentor, GapError, NoAssemblyError, Overlaps
+from choppy.fragmentor import Candidates, Fragmentor, GapError, NoAssemblyError, Overlaps
 
 
 class ConstCondition(AbstractCondition):
@@ -178,8 +178,9 @@ def test_generate_candidates_respects_constraints_and_edges():
     ov = Overlaps(seq, 10, 15)
     ov.add_condition(BoundaryMotif(motif="[GC]", max_val=0))
     cands = ov.generate_candidates(min_edge_len=40)
-    assert cands == ov.candidates
-    assert cands == sorted(cands)
+    assert cands is ov.candidates
+    assert list(cands) == sorted(cands)
+    assert np.all(cands.extra_penalty == 0)
     assert cands, "expected some candidates with a single-base motif"
     for s, e in cands:
         assert 10 <= e - s <= 15
@@ -192,7 +193,7 @@ def test_generate_candidates_respects_constraints_and_edges():
 def test_generate_candidates_empty():
     ov = Overlaps("A" * 100, 10, 15)
     ov.add_condition(BoundaryMotif(motif="GC", max_val=0))
-    assert ov.generate_candidates(min_edge_len=31) == []
+    assert len(ov.generate_candidates(min_edge_len=31)) == 0
 
 
 def test_generate_candidates_thinned():
@@ -453,3 +454,81 @@ def test_chop_short_sequence_needs_no_candidates():
     f = Fragmentor(random_seq(150), **SEG)
     f.add_condition(ConstCondition(fill=1.0, max_val=0.5))
     assert f.chop().segments == [(0, 150)]
+
+
+# --------------------------------------------------------------------------- Candidates
+
+
+def test_candidates_sorted_by_start_then_end():
+    c = Candidates([5, 1, 5, 3], [9, 4, 7, 8], [0.5, 0.1, 0.2, 0.3])
+    assert list(c) == [(1, 4), (3, 8), (5, 7), (5, 9)]
+    assert c.extra_penalty.tolist() == [0.1, 0.3, 0.2, 0.5]  # moved with their overlaps
+
+
+def test_candidates_default_and_scalar_penalty():
+    assert Candidates([1, 2], [5, 6]).extra_penalty.tolist() == [0.0, 0.0]
+    assert Candidates([1, 2], [5, 6], 2.0).extra_penalty.tolist() == [2.0, 2.0]
+
+
+def test_candidates_empty():
+    c = Candidates()
+    assert len(c) == 0 and not c and list(c) == []
+
+
+def test_candidates_add_keeps_order():
+    c = Candidates([10, 30], [20, 40])
+    c.add(25, 35, extra_penalty=1.0)
+    c.add([5, 10], [15, 18])
+    assert list(c) == [(5, 15), (10, 18), (10, 20), (25, 35), (30, 40)]
+    assert c.extra_penalty.tolist() == [0.0, 0.0, 0.0, 1.0, 0.0]
+
+
+def test_candidates_add_skips_duplicates_by_default():
+    c = Candidates([10], [20], 1.0)
+    c.add([10, 12], [20, 22], 5.0)
+    assert list(c) == [(10, 20), (12, 22)]
+    assert c.extra_penalty.tolist() == [1.0, 5.0]
+
+
+def test_candidates_add_updates_duplicates():
+    c = Candidates([10], [20], 1.0)
+    c.add([10, 12], [20, 22], 5.0, skip_duplicates=False)
+    assert list(c) == [(10, 20), (12, 22)]
+    assert c.extra_penalty.tolist() == [5.0, 5.0]
+
+
+@pytest.mark.parametrize("skip,expected", [(True, 1.0), (False, 3.0)])
+def test_candidates_duplicates_within_a_batch(skip, expected):
+    c = Candidates()
+    c.add([7, 7, 7], [9, 9, 9], [1.0, 2.0, 3.0], skip_duplicates=skip)
+    assert list(c) == [(7, 9)]
+    assert c.extra_penalty.tolist() == [expected]
+
+
+def test_candidates_arrays_are_read_only():
+    c = Candidates([1], [5])
+    for arr in (c.starts, c.ends, c.extra_penalty):
+        with pytest.raises(ValueError):
+            arr[0] = 0
+
+
+@pytest.mark.parametrize(
+    "args,match",
+    [
+        (([1, 2], [5]), "equal length"),
+        (([5], [5]), "start < end"),
+        (([-1], [5]), "start < end"),
+        (([1, 2], [5, 6], [1.0, 2.0, 3.0]), "extra_penalty"),
+    ],
+)
+def test_candidates_rejects_bad_input(args, match):
+    with pytest.raises(ValueError, match=match):
+        Candidates(*args)
+
+
+def test_chop_keeps_existing_candidates():
+    f = Fragmentor(random_seq(1000), **SEG)
+    f.generate_candidates()
+    f.segment_overlaps.candidates.add(500, 525, extra_penalty=1.0)
+    f.chop()
+    assert (500, 525) in set(f.segment_overlaps.candidates)

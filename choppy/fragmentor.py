@@ -21,6 +21,82 @@ class GapError(NoAssemblyError):
         self.gaps = gaps
 
 
+class Candidates:
+    """Candidate overlaps as parallel arrays, one entry per (start, end).
+
+    Always sorted by start, then end, with no two entries sharing (start, end). The arrays
+    are read-only so the order and the alignment of the fields cannot be broken from
+    outside; every change goes through add, which re-sorts all fields together.
+    """
+
+    def __init__(self, starts=(), ends=(), extra_penalty=0.0):
+        self.starts = self._freeze(np.empty(0, dtype=np.int64))
+        self.ends = self._freeze(np.empty(0, dtype=np.int64))
+        self.extra_penalty = self._freeze(np.empty(0, dtype=np.float64))
+        self.add(starts, ends, extra_penalty)
+
+    @staticmethod
+    def _freeze(arr: np.ndarray) -> np.ndarray:
+        arr.flags.writeable = False
+        return arr
+
+    def add(self, starts, ends, extra_penalty=0.0, skip_duplicates: bool = True) -> None:
+        """Add candidates, keeping the order by start, then end.
+
+        starts and ends are ints or array-likes of equal length; extra_penalty is a scalar
+        for all of them or one value each. A candidate whose (start, end) is already
+        present is ignored if skip_duplicates, otherwise its penalty replaces the stored
+        one. Repeats within the added batch follow the same rule in the order given.
+        """
+        new_starts = np.atleast_1d(np.asarray(starts, dtype=np.int64))
+        new_ends = np.atleast_1d(np.asarray(ends, dtype=np.int64))
+        if new_starts.ndim != 1 or new_starts.shape != new_ends.shape:
+            raise ValueError(
+                f"starts and ends must be 1-D and of equal length, got shapes "
+                f"{new_starts.shape} and {new_ends.shape}"
+            )
+        if np.any(new_starts < 0) or np.any(new_ends <= new_starts):
+            raise ValueError("Every candidate needs 0 <= start < end")
+        try:
+            new_penalty = np.broadcast_to(np.asarray(extra_penalty, dtype=np.float64),
+                                          new_starts.shape)
+        except ValueError:
+            raise ValueError(
+                f"extra_penalty must be a scalar or have {len(new_starts)} values, "
+                f"got shape {np.shape(extra_penalty)}"
+            ) from None
+
+        starts = np.concatenate((self.starts, new_starts))
+        ends = np.concatenate((self.ends, new_ends))
+        penalty = np.concatenate((self.extra_penalty, new_penalty))
+
+        # lexsort is stable: among equal (start, end), stored entries come first, then the
+        # new ones in the order given, so "first of a run" is the oldest, "last" the newest
+        order = np.lexsort((ends, starts))
+        starts, ends, penalty = starts[order], ends[order], penalty[order]
+
+        repeat = (starts[1:] == starts[:-1]) & (ends[1:] == ends[:-1])
+        keep = np.ones(len(starts), dtype=bool)
+        if skip_duplicates:
+            keep[1:] = ~repeat   # first of each run of equal (start, end)
+        else:
+            keep[:-1] = ~repeat  # last of each run
+
+        self.starts = self._freeze(starts[keep])
+        self.ends = self._freeze(ends[keep])
+        self.extra_penalty = self._freeze(penalty[keep])
+
+    def __len__(self) -> int:
+        return len(self.starts)
+
+    def __iter__(self):
+        """(start, end) pairs as plain ints, in order."""
+        return zip(self.starts.tolist(), self.ends.tolist())
+
+    def __repr__(self) -> str:
+        return f"Candidates({len(self)} overlaps)"
+
+
 @dataclass
 class Overlaps:
     """Every potential overlap of a sequence, together with the conditions scored on it."""
@@ -31,7 +107,7 @@ class Overlaps:
 
     objectives: list[AbstractCondition] = field(default_factory=list)
     constraints: list[AbstractCondition] = field(default_factory=list)
-    candidates: list[tuple[int, int]] = field(default_factory=list)
+    candidates: Candidates | None = None  # None until generated
 
     grid: OverlapGrid = field(init=False, repr=False)
 
@@ -85,27 +161,30 @@ class Overlaps:
             mask[rows[inside], cols[inside]] = False
         return mask
 
-    def generate_candidates(self, min_edge_len: int) -> list[tuple[int, int]]:
-        """Potential overlaps as (start, end), sorted by start then end."""
+    def generate_candidates(self, min_edge_len: int) -> Candidates:
+        """Potential overlaps, sorted by start then end, with no extra penalty."""
         mask = self.feasible_mask() & self.grid.edge_mask(min_edge_len)
         mask = self._thin(mask)
 
         starts, ends = self.grid.overlap(*np.nonzero(mask))
-        self.candidates = list(zip(starts.tolist(), ends.tolist()))
+        self.candidates = Candidates(starts, ends)
 
+        return self.candidates
+
+    def _require_candidates(self) -> Candidates:
+        if self.candidates is None:
+            raise ValueError("No candidates have been generated yet")
         return self.candidates
 
     def gap_lengths(self) -> np.ndarray:
         """The lengths of the potential consecutive edges."""
-        if not self.candidates:
-            raise ValueError("No candidates have been generated yet")
-        starts, ends = np.array(self.candidates, dtype=np.int64).T
-        return ends[1:] - starts[:-1]
+        c = self._require_candidates()
+        return c.ends[1:] - c.starts[:-1]
 
     def plot_gap_lengths(self, min_gap_len: int = None, ax=None):
         """Histogram of the lengths of the gaps between consecutive overlaps."""
-        if not self.candidates:
-            raise ValueError("No candidates have been generated yet")
+        if len(self._require_candidates()) < 2:
+            raise ValueError("Fewer than two candidates: there are no gaps to plot")
         lengths = self.gap_lengths()
         if min_gap_len is not None:
             lengths = lengths[lengths >= min_gap_len]
@@ -153,12 +232,9 @@ class Overlaps:
         Returns a list of (start, end) tuples, sorted by start. Each region is at least
         min_gap_len long.
         """
-        if not self.candidates:
-            raise ValueError("No candidates have been generated yet")
-        starts, ends = np.array(self.candidates, dtype=np.int64).T
         gaps = []
         prev_end = 0
-        for start, end in zip(starts, ends):
+        for start, end in self._require_candidates():
             if start - prev_end >= min_gap_len:
                 gaps.append((prev_end, start))
             prev_end = max(prev_end, end)
@@ -299,7 +375,7 @@ class Fragmentor:
         else:
             self.segment_overlaps.add_condition(condition)
 
-    def generate_candidates(self, fragment: bool = False) -> list[tuple[int, int]]:
+    def generate_candidates(self, fragment: bool = False) -> Candidates:
         if fragment:
             if self.fragment_overlaps is None:
                 raise ValueError("Fragment lengths were not set, so there is no fragment level")
@@ -349,11 +425,8 @@ class Fragmentor:
 
         # interior gaps need the least to be unbridgeable; edge gaps are filtered below
         threshold = max_len - 2 * min_ov + 1 if min_gap_len is None else min_gap_len
-        if overlaps.candidates:
-            # plain ints: np.bool_ + np.bool_ is a logical or, which would break `sides`
-            regions = [(int(a), int(b)) for a, b in overlaps.get_gapped_regions(threshold)]
-        else:
-            regions = [(0, self.seq_len)] if self.seq_len >= threshold else []
+        # with no candidates at all this is the whole sequence
+        regions = overlaps.get_gapped_regions(threshold)
 
         if min_gap_len is None:
             gaps = []
@@ -383,11 +456,13 @@ class Fragmentor:
 
     def chop(self) -> Assembly:
         """Cut the sequence into the fewest segments whose overlaps all satisfy the constraints."""
-        
-        self.generate_candidates(fragment=False)
+
+        if self.segment_overlaps.candidates is None:
+            self.generate_candidates(fragment=False)
         self.gap_check(fragment=False)
         if self.fragment_overlaps is not None:
-            self.generate_candidates(fragment=True)
+            if self.fragment_overlaps.candidates is None:
+                self.generate_candidates(fragment=True)
             self.gap_check(fragment=True)
 
         starts, ends = self._with_sentinels(self.segment_overlaps)
@@ -404,9 +479,9 @@ class Fragmentor:
 
     def _with_sentinels(self, overlaps: Overlaps) -> tuple[np.ndarray, np.ndarray]:
         """Candidates bracketed by zero-length overlaps at each end of the sequence."""
-        candidates = np.array(overlaps.candidates, dtype=np.int64).reshape(-1, 2)
-        starts = np.concatenate(([0], candidates[:, 0], [self.seq_len]))
-        ends = np.concatenate(([0], candidates[:, 1], [self.seq_len]))
+        c = overlaps._require_candidates()
+        starts = np.concatenate(([0], c.starts, [self.seq_len]))
+        ends = np.concatenate(([0], c.ends, [self.seq_len]))
         return starts, ends
 
     @staticmethod
