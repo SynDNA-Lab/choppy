@@ -197,6 +197,62 @@ class AbstractCondition(ABC):
             ok &= values <= self.max_val
         return ok
 
+    # ---- visualization -------------------------------------------------------------
+    # matplotlib is an optional dependency (the `plot` extra), so it is imported only
+    # when a plot is drawn.
+
+    def _plot_axes(self, ax):
+        """The axes to draw on: ax itself, or a fresh figure's when ax is None."""
+        if self.map is None:
+            raise ValueError("build_map must be called before plotting")
+        if ax is None:
+            import matplotlib.pyplot as plt
+            _, ax = plt.subplots(figsize=(8, 4))
+        return ax
+
+    def _plot_thresholds(self, ax) -> None:
+        """Horizontal lines at min_val, max_val and opt_val, for those that are set."""
+        styles = (
+            ("min_val", self.min_val, dict(color="0.45", linestyle="--")),
+            ("max_val", self.max_val, dict(color="0.45", linestyle="-.")),
+            ("opt_val", self.opt_val, dict(color="tab:green", linestyle=":")),
+        )
+        for name, value, style in styles:
+            if value is not None:
+                ax.axhline(float(value), linewidth=1.5, label=f"{name} = {float(value):g}", **style)
+
+    def plot_rows(self, a: int, b: int, ax=None):
+        """Plot, for each overlap start in [a, b), its score averaged over all overlap lengths.
+
+        Each row of the map is one overlap start, so every row a to b-1 is averaged across
+        its columns and drawn as one point. Cells whose overlap runs past the end of the
+        sequence hold meaningless scores and are left out of the average, so the starts
+        near the end are averaged over fewer lengths (the shortest overlap always fits).
+        The thresholds that are set are drawn as horizontal lines.
+
+        Draws on ax if given, otherwise on a new figure, and returns the axes.
+        """
+        ax = self._plot_axes(ax)
+        n_starts = self.grid.shape[0]
+        if not 0 <= a < b <= n_starts:
+            raise ValueError(f"Row range [{a}, {b}) must be non-empty and within [0, {n_starts})")
+
+        grid = self.grid
+        values = self.map.values[a:b].astype(np.float64)
+        values[grid.ends[a:b] > grid.seq_len] = np.nan
+        counted = np.sum(~np.isnan(values), axis=1)
+        with np.errstate(invalid="ignore"):
+            mean = np.nansum(values, axis=1) / counted
+
+        ax.scatter(np.arange(a, b), mean, s=12, color="tab:blue", label="mean score", zorder=3)
+        self._plot_thresholds(ax)
+        ax.set_xlabel("overlap start")
+        ax.set_ylabel("score")
+        ax.set_title(f"{type(self).__name__}: overlaps starting in [{a}, {b})")
+        ax.grid(True, color="0.9")
+        ax.legend()
+        return ax
+
 ## TODO: rewrite against the condition's own thresholds (max_val) and fill the whole map
 # class PolyX(AbstractCondition):
 #

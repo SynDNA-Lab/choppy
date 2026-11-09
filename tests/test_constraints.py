@@ -569,3 +569,82 @@ def test_boundary_motif_overlapping_occurrences():
     c.build_map(seq, grid)
     expected = brute_force_motif_map(seq, grid, "GG")
     np.testing.assert_array_equal(c.map.values[inside(grid)], expected[inside(grid)])
+
+
+# --------------------------------------------------------------------------- plotting
+
+
+@pytest.fixture
+def plt():
+    """pyplot on the non-interactive backend; skips when the `plot` extra is not installed."""
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    yield plt
+    plt.close("all")
+
+
+def plotted_points(ax) -> tuple[np.ndarray, np.ndarray]:
+    """x and y of the scatter plot_rows draws."""
+    offsets = np.asarray(ax.collections[0].get_offsets())
+    return offsets[:, 0], offsets[:, 1]
+
+
+def test_plot_rows_averages_each_row_over_lengths(plt):
+    grid = OverlapGrid(seq_len=10, min_len=2, max_len=4)  # shape (9, 3)
+    fill = np.arange(27, dtype=np.float16).reshape(9, 3) / 32
+    c = ConstCondition(fill=fill, max_val=0.5)
+    c.build_map("A" * 10, grid)
+    x, y = plotted_points(c.plot_rows(1, 4))
+    assert list(x) == [1, 2, 3]
+    np.testing.assert_allclose(y, fill[1:4].astype(np.float64).mean(axis=1))
+
+
+def test_plot_rows_drops_overlaps_past_the_sequence_end(plt):
+    grid = OverlapGrid(seq_len=10, min_len=2, max_len=4)  # shape (9, 3)
+    fill = np.zeros((9, 3), dtype=np.float16)
+    fill[grid.ends > grid.seq_len] = 1.0  # garbage in the cells past the end
+    fill[6:, 0] = [0.25, 0.5, 0.75]
+    c = ConstCondition(fill=fill, max_val=0.5)
+    c.build_map("A" * 10, grid)
+    # row 6 ends at 8..10 (all three lengths fit), row 7 at 9..11 (two), row 8 at 10..12 (one)
+    _, y = plotted_points(c.plot_rows(6, 9))
+    np.testing.assert_allclose(y, [0.25 / 3, 0.5 / 2, 0.75])
+
+
+@pytest.mark.parametrize(
+    "kwargs,labels",
+    [
+        ({"max_val": 0.5}, ["max_val"]),
+        ({"opt_val": 0.0}, ["opt_val"]),
+        ({"min_val": 0.1, "max_val": 0.9, "opt_val": 0.2}, ["min_val", "max_val", "opt_val"]),
+    ],
+)
+def test_plot_rows_draws_only_set_thresholds(plt, grid, kwargs, labels):
+    c = ConstCondition(fill=0.3, **kwargs)
+    c.build_map("A" * grid.seq_len, grid)
+    ax = c.plot_rows(0, 2)
+    drawn = [line.get_label().split(" =")[0] for line in ax.lines]
+    assert drawn == labels
+    for line, name in zip(ax.lines, labels):
+        assert list(line.get_ydata()) == pytest.approx([kwargs[name]] * 2)
+
+
+def test_plot_rows_uses_given_axes(plt, grid):
+    c = ConstCondition(max_val=0.5)
+    c.build_map("A" * grid.seq_len, grid)
+    _, ax = plt.subplots()
+    assert c.plot_rows(0, 1, ax=ax) is ax
+
+
+def test_plot_rows_requires_map(plt):
+    with pytest.raises(ValueError, match="build_map"):
+        ConstCondition(max_val=0.5).plot_rows(0, 1)
+
+
+@pytest.mark.parametrize("a,b", [(-1, 2), (2, 2), (3, 1), (0, 10**6)])
+def test_plot_rows_rejects_bad_range(plt, grid, a, b):
+    c = ConstCondition(max_val=0.5)
+    c.build_map("A" * grid.seq_len, grid)
+    with pytest.raises(ValueError, match="Row range"):
+        c.plot_rows(a, b)
