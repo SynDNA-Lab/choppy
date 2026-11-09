@@ -391,7 +391,7 @@ class StubHomology(KmerHomology):
         self.scores = np.asarray(scores, dtype=np.float16)
 
     def _kmer_scores(self, seq):
-        return self.scores
+        return self.scores, 1.0
 
 
 def brute_force_kmer_map(scores, grid, kmer):
@@ -452,9 +452,10 @@ def test_bg_homology_scores_are_capped_counts(tmp_path):
     c = BGHomology(kmer=4, cap=10, bg_fasta=fasta)
     assert c.cap == 10
     assert c.bg.counts.max() == 10
-    scores = c._kmer_scores("AAAAC")
+    scores, multiplier = c._kmer_scores("AAAAC")
     assert scores.dtype == np.float16
     assert scores.tolist() == [1.0, 0.0]
+    assert multiplier == 10
 
 
 def test_bg_homology_cap_lowered_to_max_count(tmp_path):
@@ -488,7 +489,8 @@ def test_bg_homology_from_npz_builds_map(tmp_path):
     c = BGHomology(kmer=4, bg_npz=str(npz), max_val=0.5)
     grid = OverlapGrid(len(seq), 6, 10)
     c.build_map(seq, grid)
-    expected = brute_force_kmer_map(c._kmer_scores(seq), grid, 4)
+    scores, multiplier = c._kmer_scores(seq)
+    expected = brute_force_kmer_map(scores, grid, 4)
     np.testing.assert_array_equal(c.map.values, expected)
 
 
@@ -515,14 +517,15 @@ def test_bg_homology_rejects_bad_cap(tmp_path, cap):
 def test_self_homology_unique_sequence_scores_zero():
     seq = "GTATCGGCTACCGCAAAAATAGTACCCTAT"  # every 5-mer unique on both strands
     assert BackgroundKmers.from_seqs([seq], 5).counts.max() == 1
-    scores = SelfHomology(kmer=5)._kmer_scores(seq)
+    scores, multiplier = SelfHomology(kmer=5)._kmer_scores(seq)
     assert np.all(scores == 0)
+    assert multiplier == 1
 
 
 def test_self_homology_flags_repeats_and_inverted_repeats():
     unit = "GATTACA"
     seq = unit + "CCCGC" + reverse_complement(unit) + "GCGCC"
-    scores = SelfHomology(kmer=7)._kmer_scores(seq)
+    scores, _ = SelfHomology(kmer=7)._kmer_scores(seq)
     assert scores[0] == 1.0                     # the repeat unit, via its reverse complement
     assert scores[len(unit) + 5] == 1.0         # and the reverse complement itself
     assert scores[1] == 0.0
@@ -532,7 +535,8 @@ def test_self_homology_penalises_palindromic_kmer():
     """Deliberate: a self-complementary kmer can anneal to itself and disturb the assembly,
     so it is counted on both strands and penalised even as a single occurrence."""
     seq = "ACGT" + "CAGGTCCTTGAGATTC"  # ACGT is its own reverse complement, occurs once
-    assert SelfHomology(kmer=4)._kmer_scores(seq)[0] > 0.0
+    scores, _ = SelfHomology(kmer=4)._kmer_scores(seq)
+    assert scores[0] > 0.0
 
 
 # --------------------------------------------------------------------------- BoundaryMotif

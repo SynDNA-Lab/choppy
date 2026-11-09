@@ -128,14 +128,18 @@ class OverlapGrid:
 class OverlapMap:
     grid: OverlapGrid
     values: np.ndarray
+    multiplier: float = 1.0
 
     def get_cell(self, i: int, j: int) -> np.float16:
         self.grid.check_cell(i, j)
-        return self.values[i, j]
+        return self.values[i, j] * self.multiplier
 
     def get_overlap(self, start: int, end: int) -> np.float16:
         i, j = self.grid.cell(start, end)
-        return self.values[i, j]
+        return self.values[i, j] * self.multiplier
+
+    def get_values(self) -> np.ndarray:
+        return self.values * self.multiplier
 
 @dataclass
 class AbstractCondition(ABC):
@@ -191,7 +195,7 @@ class AbstractCondition(ABC):
         """
         if self.map is None:
             raise ValueError("build_map must be called before feasible")
-        values = self.map.values
+        values = self.map.get_values()
         if self.min_val is None and self.max_val is None:
             return np.ones(values.shape, dtype=bool)
         if self.min_val is None:
@@ -225,17 +229,19 @@ class AbstractCondition(ABC):
             if value is not None:
                 ax.axhline(float(value), linewidth=1.5, label=f"{name} = {float(value):g}", **style)
 
-    def plot_rows(self, a: int, b: int, ax=None):
+    def plot_rows(self, a: int = 0, b: int = None, ax=None):
         """Plot, for each overlap start in [a, b), its minimal score across all overlap lengths.
 
         Draws on ax if given, otherwise on a new figure, and returns the axes.
         """
         ax = self._plot_axes(ax)
         n_starts = self.grid.shape[0]
+        if b is None:
+            b = n_starts
         if not 0 <= a < b <= n_starts:
             raise ValueError(f"Row range [{a}, {b}) must be non-empty and within [0, {n_starts})")
 
-        best = self.map.values[a:b].min(axis=1).astype(np.float64)
+        best = self.map.get_values()[a:b].min(axis=1).astype(np.float64)
 
         ax.scatter(np.arange(a, b), best, s=8, color="tab:blue", label="min score", zorder=3)
         self._plot_thresholds(ax)
@@ -367,13 +373,14 @@ class KmerHomology(AbstractCondition):
         if n_short == n_cols:  # kmer > max_len: no overlap is long enough to hold one
             return
 
-        scores = self._kmer_scores(seq)
+        scores, multiplier = self._kmer_scores(seq)
         padded = np.concatenate([scores, np.full(self.grid.max_len - self.grid.min_len, 1.0, dtype=np.float16)])
         windows = np.lib.stride_tricks.sliding_window_view(padded, self.grid.max_len - self.kmer + 1)
         accumulated = np.maximum.accumulate(windows, axis=1)
         # column j is the overlap of length min_len + j, whose last kmer starts at
         # offset min_len + j - kmer; the short columns above are the negative ones.
         self.map.values[:, n_short:] = accumulated[:, max(self.grid.min_len - self.kmer, 0):]
+        self.map.multiplier = multiplier
 
 @dataclass
 class BGHomology(KmerHomology):
@@ -408,15 +415,16 @@ class BGHomology(KmerHomology):
         else:
             self.bg = BackgroundKmers.load(self.bg_npz)
 
-    def _kmer_scores(self, seq: str) -> np.ndarray:
-        return np.float16(self.bg.lookup(seq) / self.cap)
+    def _kmer_scores(self, seq: str) -> tuple[np.ndarray, float]:
+        return np.float16(self.bg.lookup(seq) / self.cap), float(self.cap)
 
 @dataclass
 class SelfHomology(KmerHomology):
 
-    def _kmer_scores(self, seq: str) -> np.ndarray:
+    def _kmer_scores(self, seq: str) -> tuple[np.ndarray, float]:
         repeats = BackgroundKmers.from_seqs([seq], self.kmer).lookup(seq) - 1
-        return np.float16(repeats / max(repeats.max(), 1))
+        multiplier = float(max(repeats.max(), 1))
+        return np.float16(repeats / multiplier), multiplier
 
 @dataclass
 class BoundaryMotif(AbstractCondition):
