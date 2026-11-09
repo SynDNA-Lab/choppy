@@ -160,6 +160,9 @@ class AbstractCondition(ABC):
         Scores run from 0 to 1 (times an optional multiplier). 0 is always the best score,
         1 is the worst.
         """
+        if self.min_val is None and self.max_val is None and self.opt_val is None:
+            raise ValueError("Condition has no thresholds or objectives set: it is neither a constraint nor an objective "
+                             "and build_map is meaningless")
         if grid is not None:
             self.bind(grid)
         if self.grid is None:

@@ -192,18 +192,51 @@ def test_abstract_condition_cannot_be_instantiated():
         AbstractCondition()
 
 
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"min_val": 0.5},
+        {"max_val": 0.5},
+        {"opt_val": 0.0},
+        {"opt_val": 0.0, "min_val": 0.1, "max_val": 0.9},
+    ],
+)
+def test_build_map_accepts_any_single_threshold(grid, kwargs):
+    c = ConstCondition(**kwargs)
+    assert c.build_map("A" * grid.seq_len, grid) is c.map
+
+
+def test_build_map_rejects_meaningless_condition(grid):
+    """With no threshold at all a condition is neither a constraint nor an objective,
+    so scoring it is wasted work and almost certainly a mistake in the caller."""
+    with pytest.raises(ValueError, match="neither a constraint nor an objective"):
+        ConstCondition().build_map("A" * grid.seq_len, grid)
+
+
+def test_meaningless_condition_is_rejected_before_binding(grid):
+    """The check runs before bind, so the rejected instance is left untouched and can
+    still be given a threshold and reused."""
+    c = ConstCondition()
+    with pytest.raises(ValueError, match="neither a constraint nor an objective"):
+        c.build_map("A" * grid.seq_len, grid)
+    assert c.grid is None and c.map is None
+    c.max_val = 0.5
+    c.build_map("A" * grid.seq_len, grid)
+    assert c.grid == grid
+
+
 def test_build_map_needs_grid():
     with pytest.raises(ValueError, match="No grid bound"):
-        ConstCondition().build_map("ACGT" * 5)
+        ConstCondition(opt_val=0.0).build_map("ACGT" * 5)
 
 
 def test_build_map_checks_seq_length(grid):
     with pytest.raises(ValueError, match="long but the bound grid"):
-        ConstCondition().build_map("A" * (grid.seq_len - 1), grid)
+        ConstCondition(opt_val=0.0).build_map("A" * (grid.seq_len - 1), grid)
 
 
 def test_build_map_defaults_to_worst_score(grid):
-    m = ConstCondition().build_map("A" * grid.seq_len, grid)
+    m = ConstCondition(opt_val=0.0).build_map("A" * grid.seq_len, grid)
     assert m.values.dtype == np.float16
     assert m.values.shape == grid.shape
     assert np.all(m.values == 1.0)
@@ -235,7 +268,6 @@ SMALL_GRID = OverlapGrid(seq_len=3, min_len=2, max_len=4)  # shape (2, 3)
 @pytest.mark.parametrize(
     "kwargs,expected",
     [
-        ({}, [[1, 1, 1], [1, 1, 1]]),
         ({"max_val": 0.5}, [[1, 1, 1], [0, 0, 0]]),
         ({"min_val": 0.5}, [[0, 0, 1], [1, 1, 0]]),
         ({"min_val": 0.25, "max_val": 0.75}, [[0, 1, 1], [1, 0, 0]]),
@@ -372,7 +404,7 @@ def test_kmer_homology_is_window_max(kmer, min_len, max_len):
     rng = np.random.default_rng(kmer * 100 + min_len)
     scores = rng.random(L - kmer + 1).astype(np.float16) * 0.9
     grid = OverlapGrid(L, min_len, max_len)
-    c = StubHomology(scores, kmer=kmer)
+    c = StubHomology(scores, kmer=kmer, opt_val=0.0)
     c.build_map("A" * L, grid)
     np.testing.assert_array_equal(c.map.values, brute_force_kmer_map(scores, grid, kmer))
 
@@ -384,7 +416,7 @@ def test_kmer_homology_short_overlaps_pass(kmer, min_len, max_len):
     rng = np.random.default_rng(kmer)
     scores = (rng.random(L - kmer + 1) * 0.9 + 0.1).astype(np.float16)  # all non-zero
     grid = OverlapGrid(L, min_len, max_len)
-    c = StubHomology(scores, kmer=kmer)
+    c = StubHomology(scores, kmer=kmer, opt_val=0.0)
     c.build_map("A" * L, grid)
     assert np.all(c.map.values[:, :kmer - min_len] == 0.0)
     np.testing.assert_array_equal(c.map.values, brute_force_kmer_map(scores, grid, kmer))
@@ -392,7 +424,7 @@ def test_kmer_homology_short_overlaps_pass(kmer, min_len, max_len):
 
 def test_kmer_homology_all_overlaps_shorter_than_kmer_pass():
     grid = OverlapGrid(40, 5, 8)
-    c = StubHomology(np.ones(21), kmer=20)
+    c = StubHomology(np.ones(21), kmer=20, opt_val=0.0)
     c.build_map("A" * 40, grid)
     assert np.all(c.map.values == 0.0)
 
@@ -524,7 +556,7 @@ def test_boundary_motif_non_overlapping_occurrences():
 def test_boundary_motif_regex():
     seq = "AAGCAAAACGAAAA"
     grid = OverlapGrid(len(seq), 4, 10)
-    c = BoundaryMotif(motif="[GC][GC]")
+    c = BoundaryMotif(motif="[GC][GC]", opt_val=0.0)
     c.build_map(seq, grid)
     assert c.map.get_overlap(2, 10) == 0.0   # GC ... CG
     assert c.map.get_overlap(2, 9) == 1.0
@@ -533,7 +565,7 @@ def test_boundary_motif_regex():
 def test_boundary_motif_overlapping_occurrences():
     seq = "AGGGAAAAAAGGGA"
     grid = OverlapGrid(len(seq), 4, 12)
-    c = BoundaryMotif(motif="GG")
+    c = BoundaryMotif(motif="GG", opt_val=0.0)
     c.build_map(seq, grid)
     expected = brute_force_motif_map(seq, grid, "GG")
     np.testing.assert_array_equal(c.map.values[inside(grid)], expected[inside(grid)])

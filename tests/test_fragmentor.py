@@ -1,11 +1,4 @@
-"""Tests for the layout side of choppy.fragmentor: Overlaps and Fragmentor set-up.
-
-The path search (cut, _shortest_path, _walk_back, _why_stuck) is not covered here.
-Tests marked xfail document known bugs (see the reason); xfail is strict, so remove the
-marker once the bug is fixed.
-"""
 import itertools
-
 import numpy as np
 import pytest
 
@@ -63,6 +56,25 @@ def test_add_condition_routing(kwargs, is_objective, is_constraint):
     assert (c in ov.constraints) == is_constraint
     assert c.grid == ov.grid
     assert c.map is not None and c.map.values.shape == ov.shape
+
+
+def test_add_condition_rejects_meaningless_condition():
+    """A condition with no threshold is neither objective nor constraint: add_condition
+    builds its map first, so the rejection has to leave both lists untouched."""
+    ov = Overlaps("A" * 30, 4, 7)
+    c = ConstCondition()
+    with pytest.raises(ValueError, match="neither a constraint nor an objective"):
+        ov.add_condition(c)
+    assert ov.objectives == [] and ov.constraints == []
+    assert c.map is None
+
+
+def test_fragmentor_add_condition_rejects_meaningless_condition():
+    f = Fragmentor("ACGT" * 100, **SEG, **FRAG)
+    for fragment in (False, True):
+        with pytest.raises(ValueError, match="neither a constraint nor an objective"):
+            f.add_condition(BoundaryMotif(), fragment=fragment)
+    assert f.segment_overlaps.constraints == [] and f.fragment_overlaps.constraints == []
 
 
 def test_feasible_mask_without_constraints_is_all_true():
