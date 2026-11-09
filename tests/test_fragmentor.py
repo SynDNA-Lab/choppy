@@ -90,7 +90,9 @@ def test_feasible_mask_is_and_of_constraints():
     ov.add_condition(ConstCondition(fill=a, max_val=0.6))
     ov.add_condition(ConstCondition(fill=b, min_val=0.3))
     ov.add_condition(ConstCondition(fill=np.ones(ov.shape), opt_val=0.0))  # objective only
-    np.testing.assert_array_equal(ov.feasible_mask(), (a <= 0.6) & (b >= 0.3))
+    inside = ov.grid.ends <= ov.grid.seq_len  # past the end every score is 1
+    expected = np.where(inside, (a <= 0.6) & (b >= 0.3), (1.0 <= 0.6) & (1.0 >= 0.3))
+    np.testing.assert_array_equal(ov.feasible_mask(), expected)
 
 
 # ------------------------------------------------------------------ thinning

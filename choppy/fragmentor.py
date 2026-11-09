@@ -82,7 +82,47 @@ class Overlaps:
 
         return self.candidates
 
+    def gap_lengths(self) -> np.ndarray:
+        """The lengths of the potential consecutive edges."""
+        if not self.candidates:
+            raise ValueError("No candidates have been generated yet")
+        starts, ends = np.array(self.candidates, dtype=np.int64).T
+        return ends[1:] - starts[:-1]
 
+    def plot_gap_lengths(self, min_gap_len: int = None, ax=None):
+        """Histogram of the lengths of the gaps between consecutive overlaps."""
+        if not self.candidates:
+            raise ValueError("No candidates have been generated yet")
+        lengths = self.gap_lengths()
+        if min_gap_len is not None:
+            lengths = lengths[lengths >= min_gap_len]
+        if ax is None:
+            import matplotlib.pyplot as plt
+            fig, ax = plt.subplots()
+        ax.hist(lengths, bins=range(1, lengths.max() + 2), align="left", color="tab:blue")
+        ax.set_xlabel("gap length")
+        ax.set_ylabel("count")
+        ax.set_title(f"gaps between {len(self.candidates)} candidate overlaps")
+        return ax
+
+    def get_gapped_regions(self, min_gap_len: int) -> list[tuple[int, int]]:
+        """The regions of the sequence that are not covered by any candidate overlap.
+
+        Returns a list of (start, end) tuples, sorted by start. Each region is at least
+        min_gap_len long.
+        """
+        if not self.candidates:
+            raise ValueError("No candidates have been generated yet")
+        starts, ends = np.array(self.candidates, dtype=np.int64).T
+        gaps = []
+        prev_end = 0
+        for start, end in zip(starts, ends):
+            if start - prev_end >= min_gap_len:
+                gaps.append((prev_end, start))
+            prev_end = max(prev_end, end)
+        if len(self.seq) - prev_end >= min_gap_len:
+            gaps.append((prev_end, len(self.seq)))
+        return gaps
 @dataclass
 class Assembly:
     """One cut of the sequence: the chosen overlaps and the segments between them."""

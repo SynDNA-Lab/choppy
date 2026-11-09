@@ -256,6 +256,15 @@ def test_bind_rejects_different_grid(grid):
         c.bind(OverlapGrid(grid.seq_len, grid.min_len, grid.max_len + 1))
 
 
+def test_build_map_scores_overlaps_past_the_end_worst(grid):
+    c = ConstCondition(fill=0.0, opt_val=0.0)
+    values = c.build_map("A" * grid.seq_len, grid).values
+    past_end = grid.ends > grid.seq_len
+    assert past_end.any() and (~past_end).any()
+    assert np.all(values[past_end] == 1.0)
+    assert np.all(values[~past_end] == 0.0)
+
+
 def test_feasible_requires_map():
     with pytest.raises(ValueError, match="build_map"):
         ConstCondition(max_val=0.5).feasible()
@@ -275,8 +284,9 @@ SMALL_GRID = OverlapGrid(seq_len=3, min_len=2, max_len=4)  # shape (2, 3)
     ],
 )
 def test_feasible_thresholds(kwargs, expected):
-    c = ConstCondition(fill=VALUES, **kwargs)
+    c = ConstCondition(**kwargs)
     c.build_map("AAA", SMALL_GRID)
+    c.map.values[:] = VALUES  # bypass the past-end rule: this tests the thresholds alone
     np.testing.assert_array_equal(c.feasible(), np.array(expected, dtype=bool))
 
 
@@ -389,10 +399,10 @@ def brute_force_kmer_map(scores, grid, kmer):
     for i in range(grid.shape[0]):
         for j in range(grid.shape[1]):
             s, e = grid.overlap(i, j)
-            if e - s < kmer:
-                out[i, j] = 0.0                      # holds no complete kmer: nothing against it
-            elif e > grid.seq_len:
+            if e > grid.seq_len:
                 out[i, j] = 1.0                      # runs past the end of the sequence
+            elif e - s < kmer:
+                out[i, j] = 0.0                      # holds no complete kmer: nothing against it
             else:
                 out[i, j] = scores[s:e - kmer + 1].max()
     return out
@@ -418,7 +428,8 @@ def test_kmer_homology_short_overlaps_pass(kmer, min_len, max_len):
     grid = OverlapGrid(L, min_len, max_len)
     c = StubHomology(scores, kmer=kmer, opt_val=0.0)
     c.build_map("A" * L, grid)
-    assert np.all(c.map.values[:, :kmer - min_len] == 0.0)
+    short = c.map.values[:, :kmer - min_len]
+    assert np.all(short[(grid.ends <= L)[:, :kmer - min_len]] == 0.0)
     np.testing.assert_array_equal(c.map.values, brute_force_kmer_map(scores, grid, kmer))
 
 
@@ -426,7 +437,9 @@ def test_kmer_homology_all_overlaps_shorter_than_kmer_pass():
     grid = OverlapGrid(40, 5, 8)
     c = StubHomology(np.ones(21), kmer=20, opt_val=0.0)
     c.build_map("A" * 40, grid)
-    assert np.all(c.map.values == 0.0)
+    inside = grid.ends <= grid.seq_len
+    assert np.all(c.map.values[inside] == 0.0)
+    assert np.all(c.map.values[~inside] == 1.0)
 
 
 def write_fasta(path, seqs):
@@ -538,19 +551,15 @@ def brute_force_motif_map(seq, grid, motif):
     return out
 
 
-def inside(grid):
-    return grid.ends <= grid.seq_len
-
-
 def test_boundary_motif_non_overlapping_occurrences():
     seq = "AAGCAAAAGCAAAAAAAGCTTGCAAA"
     grid = OverlapGrid(len(seq), 4, 12)
     c = BoundaryMotif(motif="GC", max_val=0)
     c.build_map(seq, grid)
     expected = brute_force_motif_map(seq, grid, "GC")
-    np.testing.assert_array_equal(c.map.values[inside(grid)], expected[inside(grid)])
+    np.testing.assert_array_equal(c.map.values, expected)
     assert c.map.get_overlap(2, 10) == 0.0   # GCAAAAGC
-    assert c.feasible().sum() == (expected[inside(grid)] == 0).sum()
+    assert c.feasible().sum() == (expected == 0).sum()
 
 
 def test_boundary_motif_regex():
@@ -568,7 +577,16 @@ def test_boundary_motif_overlapping_occurrences():
     c = BoundaryMotif(motif="GG", opt_val=0.0)
     c.build_map(seq, grid)
     expected = brute_force_motif_map(seq, grid, "GG")
-    np.testing.assert_array_equal(c.map.values[inside(grid)], expected[inside(grid)])
+    np.testing.assert_array_equal(c.map.values, expected)
+
+
+def test_boundary_motif_past_end_scores_worst_when_sequence_ends_on_motif():
+    seq = "ACGTACGTAA"
+    grid = OverlapGrid(len(seq), 2, 4)
+    c = BoundaryMotif(motif="A", max_val=0.5)
+    c.build_map(seq, grid)
+    np.testing.assert_array_equal(c.map.values, brute_force_motif_map(seq, grid, "A"))
+    assert list(c.map.values[8]) == [0.0, 1.0, 1.0]   # only (8, 10) is a real overlap
 
 
 # --------------------------------------------------------------------------- plotting
@@ -590,26 +608,17 @@ def plotted_points(ax) -> tuple[np.ndarray, np.ndarray]:
     return offsets[:, 0], offsets[:, 1]
 
 
-def test_plot_rows_averages_each_row_over_lengths(plt):
+def test_plot_rows_takes_each_row_min_over_lengths(plt):
     grid = OverlapGrid(seq_len=10, min_len=2, max_len=4)  # shape (9, 3)
-    fill = np.arange(27, dtype=np.float16).reshape(9, 3) / 32
+    fill = np.array(
+        [[0.5, 0.25, 0.75], [1.0, 0.5, 0.125], [0.0, 1.0, 1.0], [0.75, 0.75, 0.75]] + [[1.0] * 3] * 5,
+        dtype=np.float16,
+    )
     c = ConstCondition(fill=fill, max_val=0.5)
     c.build_map("A" * 10, grid)
-    x, y = plotted_points(c.plot_rows(1, 4))
-    assert list(x) == [1, 2, 3]
-    np.testing.assert_allclose(y, fill[1:4].astype(np.float64).mean(axis=1))
-
-
-def test_plot_rows_drops_overlaps_past_the_sequence_end(plt):
-    grid = OverlapGrid(seq_len=10, min_len=2, max_len=4)  # shape (9, 3)
-    fill = np.zeros((9, 3), dtype=np.float16)
-    fill[grid.ends > grid.seq_len] = 1.0  # garbage in the cells past the end
-    fill[6:, 0] = [0.25, 0.5, 0.75]
-    c = ConstCondition(fill=fill, max_val=0.5)
-    c.build_map("A" * 10, grid)
-    # row 6 ends at 8..10 (all three lengths fit), row 7 at 9..11 (two), row 8 at 10..12 (one)
-    _, y = plotted_points(c.plot_rows(6, 9))
-    np.testing.assert_allclose(y, [0.25 / 3, 0.5 / 2, 0.75])
+    x, y = plotted_points(c.plot_rows(0, 4))
+    assert list(x) == [0, 1, 2, 3]
+    assert list(y) == [0.25, 0.125, 0.0, 0.75]
 
 
 @pytest.mark.parametrize(

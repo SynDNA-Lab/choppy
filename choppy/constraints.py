@@ -159,6 +159,9 @@ class AbstractCondition(ABC):
 
         Scores run from 0 to 1 (times an optional multiplier). 0 is always the best score,
         1 is the worst.
+
+        Cells whose overlap runs past the end of the sequence always score 1, whatever
+        _fill_map wrote there, so nothing downstream has to filter them out.
         """
         if self.min_val is None and self.max_val is None and self.opt_val is None:
             raise ValueError("Condition has no thresholds or objectives set: it is neither a constraint nor an objective "
@@ -173,6 +176,7 @@ class AbstractCondition(ABC):
             )
         self.map = OverlapMap(self.grid, np.full(self.grid.shape, 1.0, dtype=np.float16))
         self._fill_map(seq)
+        self.map.values[self.grid.ends > self.grid.seq_len] = 1.0
         return self.map
 
     @abstractmethod
@@ -222,13 +226,7 @@ class AbstractCondition(ABC):
                 ax.axhline(float(value), linewidth=1.5, label=f"{name} = {float(value):g}", **style)
 
     def plot_rows(self, a: int, b: int, ax=None):
-        """Plot, for each overlap start in [a, b), its score averaged over all overlap lengths.
-
-        Each row of the map is one overlap start, so every row a to b-1 is averaged across
-        its columns and drawn as one point. Cells whose overlap runs past the end of the
-        sequence hold meaningless scores and are left out of the average, so the starts
-        near the end are averaged over fewer lengths (the shortest overlap always fits).
-        The thresholds that are set are drawn as horizontal lines.
+        """Plot, for each overlap start in [a, b), its minimal score across all overlap lengths.
 
         Draws on ax if given, otherwise on a new figure, and returns the axes.
         """
@@ -237,14 +235,9 @@ class AbstractCondition(ABC):
         if not 0 <= a < b <= n_starts:
             raise ValueError(f"Row range [{a}, {b}) must be non-empty and within [0, {n_starts})")
 
-        grid = self.grid
-        values = self.map.values[a:b].astype(np.float64)
-        values[grid.ends[a:b] > grid.seq_len] = np.nan
-        counted = np.sum(~np.isnan(values), axis=1)
-        with np.errstate(invalid="ignore"):
-            mean = np.nansum(values, axis=1) / counted
+        best = self.map.values[a:b].min(axis=1).astype(np.float64)
 
-        ax.scatter(np.arange(a, b), mean, s=12, color="tab:blue", label="mean score", zorder=3)
+        ax.scatter(np.arange(a, b), best, s=8, color="tab:blue", label="min score", zorder=3)
         self._plot_thresholds(ax)
         ax.set_xlabel("overlap start")
         ax.set_ylabel("score")
@@ -364,10 +357,6 @@ class KmerHomology(AbstractCondition):
     def _fill_map(self, seq: str) -> None:
         """Worst kmer score over each overlap, as a running max along the length axis.
 
-        The pad gives the sliding window one row per overlap start; it is filled with 1.0,
-        the worst score, and the running max reaches it exactly on the cells whose overlap
-        ends past the end of the sequence.
-
         An overlap shorter than kmer holds no complete kmer, so there is no evidence of
         homology against it and it keeps the best score, 0. Those are the first
         `kmer - min_len` length columns, which have no window to slide over.
@@ -456,8 +445,8 @@ class BoundaryMotif(AbstractCondition):
         closes = np.zeros(grid.seq_len + 1, dtype=bool)
         closes[ends] = True
 
-        # clamped because the grid holds cells whose overlap ends past the sequence;
-        # their score is meaningless but edge_mask drops them before they are used.
+        # clamped only to keep the index in range: the cells whose overlap ends past the
+        # sequence get a meaningless score here, which build_map overwrites with 1.
         shuts = closes[np.minimum(grid.ends, grid.seq_len)]
 
         bounded = opens[:, None] & shuts
