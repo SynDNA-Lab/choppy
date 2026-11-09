@@ -105,6 +105,35 @@ class Overlaps:
         ax.set_title(f"gaps between {len(self.candidates)} candidate overlaps")
         return ax
 
+    def plot_rows(self, indices: int | list[int] | None = None, a: int = 0, b: int = None):
+        """Plot the rows of several constraints as a column of subplots sharing the x axis.
+
+        indices selects constraints by their position in self.constraints (all by default).
+        The overlap start range [a, b) is the same for every subplot. Returns the axes array.
+        """
+        if indices is None:
+            indices = range(len(self.constraints))
+        elif isinstance(indices, int):
+            indices = [indices]
+        selected = [(i, self.constraints[i]) for i in indices]
+        if not selected:
+            raise ValueError("There are no constraints to plot")
+        if b is None:
+            b = self.shape[0]
+
+        import matplotlib.pyplot as plt
+        fig, axes = plt.subplots(len(selected), 1, sharex=True, squeeze=False,
+                                 figsize=(8, 2.5 * len(selected)))
+        axes = axes[:, 0]
+        for ax, (i, constraint) in zip(axes, selected):
+            constraint.plot_rows(a, b, ax=ax)
+            ax.set_title(f"[{i}] {type(constraint).__name__}")
+            ax.set_xlabel("")
+        axes[-1].set_xlabel("overlap start")
+        fig.suptitle(f"Overlaps starting in [{a}, {b})")
+        fig.tight_layout()
+        return axes
+
     def get_gapped_regions(self, min_gap_len: int) -> list[tuple[int, int]]:
         """The regions of the sequence that are not covered by any candidate overlap.
 
@@ -257,9 +286,38 @@ class Fragmentor:
         else:
             self.segment_overlaps.add_condition(condition)
 
-    def cut(self) -> Assembly:
+    def generate_candidates(self, fragment: bool = False) -> list[tuple[int, int]]:
+        if fragment:
+            if self.fragment_overlaps is None:
+                raise ValueError("Fragment lengths were not set, so there is no fragment level")
+            return self.fragment_overlaps.generate_candidates(self.min_fragment_len)
+        else:
+            return self.segment_overlaps.generate_candidates(self.min_segment_len)
+
+    def plot_gap_lengths(self, fragment: bool = False, min_gap_len: int = None, ax=None):
+        if fragment:
+            if self.fragment_overlaps is None:
+                raise ValueError("Fragment lengths were not set, so there is no fragment level")
+            return self.fragment_overlaps.plot_gap_lengths(min_gap_len, ax)
+        else:
+            return self.segment_overlaps.plot_gap_lengths(min_gap_len, ax)
+
+    def plot_rows(self, fragment: bool = False, indices: int | list[int] | None = None,
+                  a: int = 0, b: int = None):
+        if fragment:
+            if self.fragment_overlaps is None:
+                raise ValueError("Fragment lengths were not set, so there is no fragment level")
+            return self.fragment_overlaps.plot_rows(indices, a, b)
+        else:
+            return self.segment_overlaps.plot_rows(indices, a, b)
+
+    def chop(self) -> Assembly:
         """Cut the sequence into the fewest segments whose overlaps all satisfy the constraints."""
-        self.segment_overlaps.generate_candidates(self.min_segment_len)
+        
+        self.generate_candidates(fragment=False)
+        if self.fragment_overlaps is not None:
+            self.generate_candidates(fragment=True)
+
         starts, ends = self._with_sentinels(self.segment_overlaps)
 
         weights, back = self._shortest_path(starts, ends, self.min_segment_len, self.max_segment_len)
