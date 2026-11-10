@@ -698,6 +698,13 @@ def test_plot_rows_titles_with_the_scorer(plt, grid):
     assert c.plot_rows(0, 1).get_title().startswith("BoundaryMotif:")
 
 
+def test_plot_rows_titles_with_the_name_when_set(plt, grid):
+    scorer = BoundaryMotif()
+    c = Condition(scorer, max_val=0.5, name="gc ends")
+    c.bind(scorer.build_map("A" * grid.seq_len, grid))
+    assert c.plot_rows(0, 1).get_title().startswith("gc ends:")
+
+
 def test_plot_rows_requires_map(plt):
     with pytest.raises(ValueError, match="bound to a map"):
         Condition(ConstScorer(), max_val=0.5).plot_rows(0, 1)

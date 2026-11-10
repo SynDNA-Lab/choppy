@@ -646,3 +646,101 @@ def test_chop_keeps_existing_candidates():
     f.segment_overlaps.candidates.add(500, 525, extra_penalty=1.0)
     f.chop()
     assert (500, 525) in set(f.segment_overlaps.candidates)
+
+
+# --------------------------------------------------------------------------- names and bookkeeping
+
+
+def test_constraints_and_objectives_follow_the_conditions():
+    ov = Overlaps("A" * 30, 4, 7)
+    both, only_opt = const(max_val=0.5, opt_val=0.0), const(opt_val=0.0)
+    ov.add_condition(both)
+    ov.add_condition(only_opt)
+    assert ov.conditions == [both, only_opt]
+    assert ov.constraints == [both]
+    assert ov.objectives == [both, only_opt]
+
+
+def test_get_condition_by_name():
+    f = Fragmentor("ACGT" * 100, **SEG, **FRAG)
+    gc, at = motif("GC", max_val=0, name="gc"), motif("AT", max_val=0, name="at")
+    f.add_condition(gc)
+    f.add_condition(at, fragment=True)
+    assert f.get_condition("gc") is gc
+    assert f.get_condition("at", fragment=True) is at
+    with pytest.raises(KeyError, match=r"No condition named 'at'.*\['gc'\]"):
+        f.get_condition("at")
+
+
+def test_get_condition_without_fragment_level():
+    with pytest.raises(ValueError, match="no fragment level"):
+        Fragmentor("ACGT" * 100, **SEG).get_condition("gc", fragment=True)
+
+
+def test_duplicate_name_on_a_level_is_rejected_before_binding():
+    ov = Overlaps("A" * 30, 4, 7)
+    ov.add_condition(motif("GC", max_val=0, name="x"))
+    dup = motif("AT", max_val=0, name="x")
+    with pytest.raises(ValueError, match="already a condition named 'x'"):
+        ov.add_condition(dup)
+    assert dup.map is None and len(ov.conditions) == 1
+
+
+def test_same_name_on_both_levels_is_fine():
+    f = Fragmentor("ACGT" * 100, **SEG, **FRAG)
+    f.add_condition(motif(max_val=0, name="gc"))
+    f.add_condition(motif(max_val=0, name="gc"), fragment=True)
+
+
+def test_second_condition_on_an_equal_scorer_is_rejected_before_binding():
+    ov = Overlaps("A" * 30, 4, 7)
+    ov.add_condition(motif("GC", max_val=0, name="strict"))
+    second = motif("GC", max_val=1)  # an equal scorer, though a separate instance
+    with pytest.raises(ValueError, match=r"already a condition on BoundaryMotif.*\(strict\)"):
+        ov.add_condition(second)
+    assert second.map is None and len(ov.conditions) == 1
+    ov.add_condition(motif("CG", max_val=1))  # a different scorer is fine
+
+
+def test_label_is_the_name_or_the_scorer_class():
+    assert motif(max_val=0).label == "BoundaryMotif"
+    assert motif(max_val=0, name="gc").label == "gc"
+
+
+@pytest.fixture
+def plt():
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    yield plt
+    plt.close("all")
+
+
+def plotted_overlaps():
+    ov = Overlaps(random_seq(60), 5, 8)
+    ov.add_condition(motif("GC", max_val=0, name="gc"))
+    ov.add_condition(motif("AT", max_val=0))
+    ov.add_condition(motif("CC", opt_val=0, name="cc"))  # objective only
+    return ov
+
+
+def test_overlaps_plot_rows_all_constraints_by_default(plt):
+    axes = plotted_overlaps().plot_rows()
+    assert [ax.get_title() for ax in axes] == ["[0] gc", "[1] BoundaryMotif"]
+
+
+def test_overlaps_plot_rows_by_name_and_index(plt):
+    axes = plotted_overlaps().plot_rows(["cc", 1])
+    assert [ax.get_title() for ax in axes] == ["cc", "[1] BoundaryMotif"]
+
+
+def test_overlaps_plot_rows_unknown_name(plt):
+    with pytest.raises(KeyError, match="No condition named 'nope'"):
+        plotted_overlaps().plot_rows("nope")
+
+
+def test_fragmentor_plot_rows_by_name(plt):
+    f = Fragmentor(random_seq(400), **SEG, **FRAG)
+    f.add_condition(motif("GC", max_val=0, name="gc"), fragment=True)
+    axes = f.plot_rows(fragment=True, indices="gc", a=0, b=50)
+    assert [ax.get_title() for ax in axes] == ["gc"]

@@ -123,8 +123,7 @@ class Overlaps:
     max_len: int # maximal overlap length
     min_step: int | None = None # thinning parameter for overlaps (delta_start + delta_end >= min_step)
 
-    objectives: list[Condition] = field(default_factory=list)
-    constraints: list[Condition] = field(default_factory=list)
+    conditions: list[Condition] = field(default_factory=list)
     candidates: Candidates | None = None  # None until generated
     maps: MapStore | None = field(default=None, repr=False)
 
@@ -145,12 +144,41 @@ class Overlaps:
     def shape(self) -> tuple[int, int]:
         return self.grid.shape
 
+    @property
+    def constraints(self) -> list[Condition]:
+        """The conditions with min_val and/or max_val, in the order added."""
+        return [c for c in self.conditions if c.is_constraint]
+
+    @property
+    def objectives(self) -> list[Condition]:
+        """The conditions with opt_val, in the order added."""
+        return [c for c in self.conditions if c.is_objective]
+
     def add_condition(self, condition: Condition) -> None:
+        """Bind condition to this level's view of its scorer's map and keep it.
+
+        A level holds at most one condition per scorer, and its name, if set, must be
+        unique here; both are checked before anything is bound, so a rejected condition is
+        left untouched.
+        """
+        if condition.name is not None and any(c.name == condition.name for c in self.conditions):
+            raise ValueError(f"There is already a condition named {condition.name!r} on this level")
+        for c in self.conditions:
+            if c.scorer == condition.scorer:
+                raise ValueError(
+                    f"There is already a condition on {condition.scorer} on this level "
+                    f"({c.label}): change its thresholds instead of adding another one"
+                )
         condition.bind(self.maps.view(condition.scorer, self.grid))
-        if condition.opt_val is not None:
-            self.objectives.append(condition)
-        if condition.min_val is not None or condition.max_val is not None:
-            self.constraints.append(condition)
+        self.conditions.append(condition)
+
+    def get_condition(self, name: str) -> Condition:
+        """The condition named name on this level."""
+        for c in self.conditions:
+            if c.name == name:
+                return c
+        names = [c.name for c in self.conditions if c.name is not None]
+        raise KeyError(f"No condition named {name!r} on this level; named ones: {names}")
 
     def feasible_mask(self) -> np.ndarray:
         """Boolean mask of the overlaps that satisfy all constraints."""
@@ -235,17 +263,26 @@ class Overlaps:
         ax.set_title(f"gaps between {self.candidates.n_overlaps} candidate overlaps")
         return ax
 
-    def plot_rows(self, indices: int | list[int] | None = None, a: int = 0, b: int = None):
+    def plot_rows(self, indices: int | str | list[int | str] | None = None, a: int = 0, b: int = None):
         """Plot the rows of several constraints as a column of subplots sharing the x axis.
 
-        indices selects constraints by their position in self.constraints (all by default).
-        The overlap start range [a, b) is the same for every subplot. Returns the axes array.
+        indices selects constraints by their position in self.constraints (all by default)
+        or conditions by name, mixed freely. The overlap start range [a, b) is the same for
+        every subplot. Returns the axes array.
         """
         if indices is None:
             indices = range(len(self.constraints))
-        elif isinstance(indices, int):
+        elif isinstance(indices, (int, str)):
             indices = [indices]
-        selected = [(i, self.constraints[i]) for i in indices]
+        constraints = self.constraints
+        selected = []  # (subplot title, condition)
+        for i in indices:
+            if isinstance(i, str):
+                c = self.get_condition(i)
+                selected.append((c.label, c))
+            else:
+                c = constraints[i]
+                selected.append((f"[{i}] {c.label}", c))
         if not selected:
             raise ValueError("There are no constraints to plot")
         if b is None:
@@ -255,9 +292,9 @@ class Overlaps:
         fig, axes = plt.subplots(len(selected), 1, sharex=True, squeeze=False,
                                  figsize=(8, 2.5 * len(selected)))
         axes = axes[:, 0]
-        for ax, (i, constraint) in zip(axes, selected):
-            constraint.plot_rows(a, b, ax=ax)
-            ax.set_title(f"[{i}] {type(constraint.scorer).__name__}")
+        for ax, (title, condition) in zip(axes, selected):
+            condition.plot_rows(a, b, ax=ax)
+            ax.set_title(title)
             ax.set_xlabel("")
         axes[-1].set_xlabel("overlap start")
         fig.suptitle(f"Overlaps starting in [{a}, {b})")
@@ -431,13 +468,19 @@ class Fragmentor:
             return longest
         return max_overlap_len
 
+    def _level(self, fragment: bool) -> Overlaps:
+        """The fragment or the segment level."""
+        if not fragment:
+            return self.segment_overlaps
+        if self.fragment_overlaps is None:
+            raise ValueError("Fragment lengths were not set, so there is no fragment level")
+        return self.fragment_overlaps
+
     def add_condition(self, condition: Condition, fragment: bool = False) -> None:
-        if fragment:
-            if self.fragment_overlaps is None:
-                raise ValueError("Fragment lengths were not set, so there is no fragment level")
-            self.fragment_overlaps.add_condition(condition)
-        else:
-            self.segment_overlaps.add_condition(condition)
+        self._level(fragment).add_condition(condition)
+
+    def get_condition(self, name: str, fragment: bool = False) -> Condition:
+        return self._level(fragment).get_condition(name)
 
     def generate_candidates(self, fragment: bool = False) -> Candidates:
         if fragment:
@@ -455,14 +498,9 @@ class Fragmentor:
         else:
             return self.segment_overlaps.plot_gap_lengths(min_gap_len, ax)
 
-    def plot_rows(self, fragment: bool = False, indices: int | list[int] | None = None,
+    def plot_rows(self, fragment: bool = False, indices: int | str | list[int | str] | None = None,
                   a: int = 0, b: int = None):
-        if fragment:
-            if self.fragment_overlaps is None:
-                raise ValueError("Fragment lengths were not set, so there is no fragment level")
-            return self.fragment_overlaps.plot_rows(indices, a, b)
-        else:
-            return self.segment_overlaps.plot_rows(indices, a, b)
+        return self._level(fragment).plot_rows(indices, a, b)
 
     def gap_check(self, fragment: bool = False, min_gap_len: int = None) -> None:
         """Raise GapError if some stretch between candidate overlaps is too long to bridge.

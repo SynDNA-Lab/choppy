@@ -204,12 +204,14 @@ class Condition:
     (opt_val), or both.
 
     It compares by identity, unlike its scorer: two conditions on the same scorer are
-    still separate conditions. The map is attached by the owning Overlaps.
+    still separate conditions. The map is attached by the owning Overlaps. name is
+    optional; when set it must be unique on the level, which can then look it up by it.
     """
     scorer: AbstractScorer
     min_val: np.float16 | None = None
     max_val: np.float16 | None = None
     opt_val: np.float16 | None = None
+    name: str | None = None
     map: OverlapMap | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -220,6 +222,19 @@ class Condition:
     @property
     def grid(self) -> OverlapGrid | None:
         return None if self.map is None else self.map.grid
+
+    @property
+    def label(self) -> str:
+        """The name if there is one, otherwise the scorer's class name; used in plots."""
+        return self.name if self.name is not None else type(self.scorer).__name__
+
+    @property
+    def is_constraint(self) -> bool:
+        return self.min_val is not None or self.max_val is not None
+
+    @property
+    def is_objective(self) -> bool:
+        return self.opt_val is not None
 
     def bind(self, overlap_map: OverlapMap) -> None:
         """Attach the map this condition reads its scores from, normally by the owning
@@ -292,7 +307,7 @@ class Condition:
         self._plot_thresholds(ax)
         ax.set_xlabel("overlap start")
         ax.set_ylabel("score")
-        ax.set_title(f"{type(self.scorer).__name__}: overlaps starting in [{a}, {b})")
+        ax.set_title(f"{self.label}: overlaps starting in [{a}, {b})")
         ax.grid(True, color="0.9")
         ax.legend()
         return ax
