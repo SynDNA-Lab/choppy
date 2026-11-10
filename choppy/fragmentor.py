@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field, InitVar
 import warnings
 import numpy as np
-from choppy.constraints import Condition, OverlapGrid, check_seq
+from choppy.constraints import Condition, MapStore, OverlapGrid, check_seq
 
 
 class NoAssemblyError(RuntimeError):
@@ -112,7 +112,12 @@ class Candidates:
 
 @dataclass
 class Overlaps:
-    """Every potential overlap of a sequence, together with the conditions scored on it."""
+    """Every potential overlap of a sequence, together with the conditions scored on it.
+
+    The condition maps come from maps, a store that may be shared with other levels: its
+    grid can be wider than this level's, and each condition reads a view of the shared
+    map cut down to this level's grid. Without a store the level gets one of its own.
+    """
     seq: str
     min_len: int # miminal overlap length
     max_len: int # maximal overlap length
@@ -121,11 +126,18 @@ class Overlaps:
     objectives: list[Condition] = field(default_factory=list)
     constraints: list[Condition] = field(default_factory=list)
     candidates: Candidates | None = None  # None until generated
+    maps: MapStore | None = field(default=None, repr=False)
 
     grid: OverlapGrid = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.grid = OverlapGrid(len(self.seq), self.min_len, self.max_len)
+        if self.maps is None:
+            self.maps = MapStore(self.seq, self.grid)
+        else:
+            if self.maps.seq != self.seq:
+                raise ValueError("The map store is for a different sequence")
+            self.maps.grid.slices(self.grid)  # raises unless this level fits the store's grid
         if self.min_step == 1:
             self.min_step = None  # no thinning needed if min_step is 1
 
@@ -134,7 +146,7 @@ class Overlaps:
         return self.grid.shape
 
     def add_condition(self, condition: Condition) -> None:
-        condition.bind(condition.scorer.build_map(self.seq, self.grid))
+        condition.bind(self.maps.view(condition.scorer, self.grid))
         if condition.opt_val is not None:
             self.objectives.append(condition)
         if condition.min_val is not None or condition.max_val is not None:
@@ -289,6 +301,8 @@ class Fragmentor:
     max_fragment_len: int | None = None
     min_step: int | None = None
 
+    grid: OverlapGrid = field(init=False, repr=False)  # spans the overlap lengths of both levels
+    maps: MapStore = field(init=False, repr=False)     # shared by both levels
     fragment_overlaps: Overlaps | None = field(init=False, repr=False)
     segment_overlaps: Overlaps = field(init=False, repr=False)
 
@@ -341,10 +355,35 @@ class Fragmentor:
                 f"({self.min_segment_len}): there is nothing to cut"
             )
 
+        ranges = [(min_segment_overlap_len, max_segment_overlap_len)]
+        if self.use_fragments:
+            ranges.append((min_fragment_overlap_len, max_fragment_overlap_len))
+        self.grid = OverlapGrid(self.seq_len, min(lo for lo, _ in ranges), max(hi for _, hi in ranges))
+        self._warn_unused_lengths(ranges)
+        self.maps = MapStore(self.seq, self.grid)
+
         self.fragment_overlaps = Overlaps(self.seq, min_fragment_overlap_len, max_fragment_overlap_len,
-                                          self.min_step) if self.use_fragments else None
+                                          self.min_step, maps=self.maps) if self.use_fragments else None
         self.segment_overlaps = Overlaps(self.seq, min_segment_overlap_len, max_segment_overlap_len,
-                                         self.min_step)
+                                         self.min_step, maps=self.maps)
+
+    def _warn_unused_lengths(self, ranges: list[tuple[int, int]]) -> None:
+        """Warn when the shared grid is mostly overlap lengths no level uses.
+
+        The two levels share one map per scorer over every length from the shortest
+        minimum to the longest maximum. When their ranges are far apart, the lengths in
+        between are scored and stored for nothing; past the point where they outnumber
+        the used ones, two separate maps would have been smaller than the shared one.
+        """
+        used = len(set().union(*(range(lo, hi + 1) for lo, hi in ranges)))
+        unused = self.grid.shape[1] - used
+        if unused > used:
+            warnings.warn(
+                f"The segment and fragment overlap lengths {ranges} are far apart: the maps "
+                f"shared by both levels span {self.grid.min_len}-{self.grid.max_len} bp, and "
+                f"{unused} of those {self.grid.shape[1]} lengths are used by neither level",
+                stacklevel=4,
+            )
 
     @staticmethod
     def _check_lengths(name: str, min_overlap_len, max_overlap_len, min_len, max_len) -> int:

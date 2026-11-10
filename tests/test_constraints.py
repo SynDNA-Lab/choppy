@@ -16,6 +16,7 @@ from choppy.constraints import (
     BoundaryMotif,
     Condition,
     KmerHomology,
+    MapStore,
     OverlapGrid,
     OverlapMap,
     SelfHomology,
@@ -172,6 +173,36 @@ def test_overlap_map_lookups(grid):
     m = OverlapMap(grid, values)
     assert m.get_cell(3, 2) == values[3, 2]
     assert m.get_overlap(3, 3 + 7) == values[3, 2]
+
+
+@pytest.mark.parametrize("min_len,max_len", [(5, 9), (5, 5), (7, 8), (9, 9)])
+def test_grid_slices_map_each_sub_cell_to_the_same_overlap(grid, min_len, max_len):
+    sub = OverlapGrid(grid.seq_len, min_len, max_len)
+    rows, cols = grid.slices(sub)
+    np.testing.assert_array_equal(grid.starts[rows], sub.starts)
+    np.testing.assert_array_equal(grid.ends[rows, cols], sub.ends)
+
+
+@pytest.mark.parametrize(
+    "sub,match",
+    [
+        (OverlapGrid(49, 5, 9), "sequence of 49"),
+        (OverlapGrid(50, 4, 9), "not within"),
+        (OverlapGrid(50, 6, 10), "not within"),
+    ],
+)
+def test_grid_slices_rejects_a_grid_that_does_not_fit(grid, sub, match):
+    with pytest.raises(ValueError, match=match):
+        grid.slices(sub)
+
+
+def test_overlap_map_view_shares_memory(grid):
+    m = OverlapMap(grid, np.arange(np.prod(grid.shape), dtype=np.float16).reshape(grid.shape), 3.0)
+    sub = OverlapGrid(grid.seq_len, 6, 8)
+    v = m.view(sub)
+    assert v.grid == sub and v.multiplier == 3.0
+    assert np.shares_memory(v.values, m.values)
+    assert v.get_overlap(10, 17) == m.get_overlap(10, 17)
 
 
 # --------------------------------------------------------------------------- scorer and condition
@@ -677,3 +708,68 @@ def test_plot_rows_rejects_bad_range(plt, grid, a, b):
     c = bound(ConstScorer(), "A" * grid.seq_len, grid, max_val=0.5)
     with pytest.raises(ValueError, match="Row range"):
         c.plot_rows(a, b)
+
+
+# --------------------------------------------------------------------------- shared maps
+
+
+def view_scorers(tmp_path, seq):
+    """One scorer of each kind, with a kmer that falls inside the union length range."""
+    L = len(seq)
+    fasta = write_fasta(tmp_path / "bg.fa", [random_seq(400, seed=11), seq[10:60]])
+    scores = np.random.default_rng(3).random(L - 7 + 1).astype(np.float16)
+    return [
+        BoundaryMotif("[GC]"),
+        StubHomology(kmer=7, scores=scores),
+        SelfHomology(kmer=7),
+        BGHomology(kmer=7, bg_fasta=fasta),
+    ]
+
+
+@pytest.mark.parametrize("min_len,max_len", [(4, 6), (8, 12), (15, 20), (4, 20)])
+def test_view_of_a_union_map_equals_a_standalone_map(tmp_path, min_len, max_len):
+    """Every score depends on the overlap alone, not on the grid it is laid out on, so a
+    level reading a slice of a wider map sees exactly the map it would build itself."""
+    seq = random_seq(80, seed=12)
+    union = OverlapGrid(len(seq), 4, 20)
+    sub = OverlapGrid(len(seq), min_len, max_len)
+    for scorer in view_scorers(tmp_path, seq):
+        own = scorer.build_map(seq, sub)
+        view = scorer.build_map(seq, union).view(sub)
+        np.testing.assert_array_equal(view.values, own.values, err_msg=type(scorer).__name__)
+        assert view.multiplier == own.multiplier
+
+
+def test_map_store_builds_each_scorer_once(grid):
+    store = MapStore("A" * grid.seq_len, grid)
+    scorer = BoundaryMotif("A")
+    assert scorer not in store
+    m = store.get(scorer)
+    assert scorer in store and len(store) == 1
+    assert store.get(scorer) is m
+    assert store.get(BoundaryMotif("A")) is m        # equal, not identical
+    assert store.get(BoundaryMotif("AA")) is not m
+    assert len(store) == 2
+
+
+def test_map_store_views_share_one_map(grid):
+    store = MapStore(random_seq(grid.seq_len), grid)
+    scorer = BoundaryMotif("[GC]")
+    a = store.view(scorer, OverlapGrid(grid.seq_len, 5, 7))
+    b = store.view(BoundaryMotif("[GC]"), OverlapGrid(grid.seq_len, 6, 9))
+    assert len(store) == 1
+    assert np.shares_memory(a.values, b.values)
+
+
+def test_map_store_maps_are_read_only(grid):
+    store = MapStore("A" * grid.seq_len, grid)
+    m = store.get(BoundaryMotif("A"))
+    with pytest.raises(ValueError, match="read-only"):
+        m.values[0, 0] = 0.5
+    with pytest.raises(ValueError, match="read-only"):
+        store.view(BoundaryMotif("A"), OverlapGrid(grid.seq_len, 6, 7)).values[0, 0] = 0.5
+
+
+def test_map_store_checks_seq_length(grid):
+    with pytest.raises(ValueError, match="long but the grid"):
+        MapStore("A" * (grid.seq_len + 1), grid)

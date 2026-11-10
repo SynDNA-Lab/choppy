@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from choppy.constraints import AbstractScorer, BoundaryMotif, Condition, OverlapGrid
+from choppy.constraints import AbstractScorer, BoundaryMotif, Condition, MapStore, OverlapGrid
 from choppy.fragmentor import Candidates, Fragmentor, GapError, NoAssemblyError, Overlaps
 
 
@@ -44,6 +44,36 @@ def test_overlaps_grid_and_shape():
 
 def test_overlaps_min_step_one_disables_thinning():
     assert Overlaps("A" * 30, 4, 7, min_step=1).min_step is None
+
+
+def test_overlaps_without_a_store_gets_its_own():
+    ov = Overlaps("A" * 30, 4, 7)
+    assert ov.maps.grid == ov.grid and len(ov.maps) == 0
+    ov.add_condition(motif("A", max_val=0))
+    assert len(ov.maps) == 1
+
+
+def test_overlaps_reads_a_view_of_a_wider_store():
+    seq = random_seq(60)
+    store = MapStore(seq, OverlapGrid(60, 3, 12))
+    ov = Overlaps(seq, 5, 8, maps=store)
+    c = motif("[GC]", max_val=0)
+    ov.add_condition(c)
+    assert c.grid == ov.grid
+    assert np.shares_memory(c.map.values, store.get(BoundaryMotif("[GC]")).values)
+    np.testing.assert_array_equal(c.map.values, BoundaryMotif("[GC]").build_map(seq, ov.grid).values)
+
+
+@pytest.mark.parametrize(
+    "store,match",
+    [
+        (MapStore("A" * 30, OverlapGrid(30, 4, 6)), "not within"),
+        (MapStore("C" * 30, OverlapGrid(30, 4, 7)), "different sequence"),
+    ],
+)
+def test_overlaps_rejects_a_store_it_does_not_fit(store, match):
+    with pytest.raises(ValueError, match=match):
+        Overlaps("A" * 30, 4, 7, maps=store)
 
 
 def test_overlaps_instances_do_not_share_lists():
@@ -216,6 +246,46 @@ def test_fragmentor_segment_only():
     assert f.fragment_overlaps is None
     assert f.segment_overlaps.grid == OverlapGrid(400, 20, 30)
     assert f.segment_overlaps.seq == f.seq
+    assert f.grid == OverlapGrid(400, 20, 30)
+    assert f.segment_overlaps.maps is f.maps
+
+
+def test_fragmentor_grid_spans_both_levels():
+    f = Fragmentor("ACGT" * 100, **SEG, **FRAG)
+    assert f.grid == OverlapGrid(400, 10, 30)
+    assert f.maps.grid == f.grid
+    assert f.segment_overlaps.maps is f.maps and f.fragment_overlaps.maps is f.maps
+
+
+def test_fragmentor_grid_follows_the_lowered_max_overlap():
+    with pytest.warns(UserWarning, match="Lowering it to 29"):
+        f = Fragmentor("ACGT" * 100, **{**SEG, "min_segment_len": 60})
+    assert f.grid == OverlapGrid(400, 20, 29)
+
+
+def test_fragmentor_levels_share_one_map_per_scorer():
+    seq = random_seq(400, seed=7)
+    f = Fragmentor(seq, **SEG, **FRAG)
+    seg_c, frag_c = motif("[GC]", max_val=0), motif("[GC]", min_val=1)
+    f.add_condition(seg_c)
+    f.add_condition(frag_c, fragment=True)
+    assert len(f.maps) == 1
+    shared = f.maps.get(BoundaryMotif("[GC]")).values
+    for c, overlaps in ((seg_c, f.segment_overlaps), (frag_c, f.fragment_overlaps)):
+        # the two levels' columns are disjoint here, so each view shares only with the full map
+        assert np.shares_memory(c.map.values, shared)
+        own = BoundaryMotif("[GC]").build_map(seq, overlaps.grid)
+        np.testing.assert_array_equal(c.map.values, own.values)
+    f.add_condition(motif("GC", max_val=0))
+    assert len(f.maps) == 2
+
+
+def test_fragmentor_warns_when_most_shared_lengths_are_unused():
+    # segment overlaps 40-42 and fragment overlaps 10-11: 5 lengths used out of 10-42
+    seg = {**SEG, "min_segment_overlap_len": 40, "max_segment_overlap_len": 42}
+    frag = {**FRAG, "max_fragment_overlap_len": 11}
+    with pytest.warns(UserWarning, match="28 of those 33 lengths are used by neither level"):
+        Fragmentor("ACGT" * 100, **seg, **frag)
 
 
 def test_fragmentor_with_fragments():

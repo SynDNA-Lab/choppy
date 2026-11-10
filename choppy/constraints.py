@@ -117,6 +117,24 @@ class OverlapGrid:
         """Overlap end of every cell, shaped (n_starts, n_lens)."""
         return self.starts + self.lengths
 
+    def slices(self, sub: "OverlapGrid") -> tuple[slice, slice]:
+        """The rows and columns of this grid that hold sub, a grid over the same sequence
+        whose length range lies inside this one's.
+
+        Cell (i, j) of sub is the overlap (i, i + sub.min_len + j), which is cell
+        (i, j + sub.min_len - min_len) here; sub has fewer starts when its min_len is
+        larger, and those are the first rows.
+        """
+        if sub.seq_len != self.seq_len:
+            raise ValueError(f"{sub} is over a sequence of {sub.seq_len}, not {self.seq_len}")
+        if sub.min_len < self.min_len or sub.max_len > self.max_len:
+            raise ValueError(
+                f"Overlap lengths [{sub.min_len}, {sub.max_len}] of {sub} are not within "
+                f"[{self.min_len}, {self.max_len}]"
+            )
+        offset = sub.min_len - self.min_len
+        return slice(0, sub.shape[0]), slice(offset, offset + sub.shape[1])
+
     def edge_mask(self, min_edge_len: int) -> np.ndarray:
         """
         Cells that represent overlaps that can never potentially be used since they
@@ -140,6 +158,14 @@ class OverlapMap:
 
     def get_values(self) -> np.ndarray:
         return self.values * self.multiplier
+
+    def view(self, grid: OverlapGrid) -> "OverlapMap":
+        """This map seen through grid, a sub-grid of its own (see OverlapGrid.slices).
+
+        The values are a numpy view, not a copy: the two maps share their memory.
+        """
+        rows, cols = self.grid.slices(grid)
+        return OverlapMap(grid, self.values[rows, cols], self.multiplier)
 
 @dataclass(frozen=True)
 class AbstractScorer(ABC):
@@ -271,6 +297,43 @@ class Condition:
         ax.legend()
         return ax
 
+class MapStore:
+    """One map per scorer over one grid, shared by every condition and level using it.
+
+    A map is built the first time its scorer is asked for; equal scorers (same type and
+    parameters) get the same map. The stored values are read-only, since a write through
+    one condition would silently change every other condition reading the same map.
+    """
+
+    def __init__(self, seq: str, grid: OverlapGrid):
+        if len(seq) != grid.seq_len:
+            raise ValueError(f"Sequence is {len(seq)} long but the grid is for {grid.seq_len}")
+        self.seq = seq
+        self.grid = grid
+        self._maps: dict[AbstractScorer, OverlapMap] = {}
+
+    def get(self, scorer: AbstractScorer) -> OverlapMap:
+        """The map of scorer over the whole grid, built on first use."""
+        overlap_map = self._maps.get(scorer)
+        if overlap_map is None:
+            overlap_map = scorer.build_map(self.seq, self.grid)
+            overlap_map.values.flags.writeable = False
+            self._maps[scorer] = overlap_map
+        return overlap_map
+
+    def view(self, scorer: AbstractScorer, grid: OverlapGrid) -> OverlapMap:
+        """The map of scorer seen through grid, a sub-grid of the store's."""
+        return self.get(scorer).view(grid)
+
+    def __contains__(self, scorer: AbstractScorer) -> bool:
+        return scorer in self._maps
+
+    def __len__(self) -> int:
+        return len(self._maps)
+
+    def __repr__(self) -> str:
+        return f"MapStore({len(self)} maps on {self.grid})"
+
 ## TODO: rewrite as a scorer (thresholds live on the Condition) and fill the whole map
 # class PolyX(AbstractScorer):
 #
@@ -385,14 +448,18 @@ class KmerHomology(AbstractScorer):
         An overlap shorter than kmer holds no complete kmer, so there is no evidence of
         homology against it and it keeps the best score, 0. Those are the first
         `kmer - min_len` length columns, which have no window to slide over.
+
+        The kmer scores are computed even when no overlap is long enough to need them:
+        the multiplier comes with them, and it belongs to the scorer and the sequence, not
+        to the grid, so a map and any view of a wider map must agree on it.
         """
         n_cols = grid.shape[1]
         n_short = min(max(self.kmer - grid.min_len, 0), n_cols)
         values[:, :n_short] = 0.0
-        if n_short == n_cols:  # kmer > max_len: no overlap is long enough to hold one
-            return 1.0
-
         scores, multiplier = self._kmer_scores(seq)
+        if n_short == n_cols:  # kmer > max_len: no overlap is long enough to hold one
+            return multiplier
+
         padded = np.concatenate([scores, np.full(grid.max_len - grid.min_len, 1.0, dtype=np.float16)])
         windows = np.lib.stride_tricks.sliding_window_view(padded, grid.max_len - self.kmer + 1)
         accumulated = np.maximum.accumulate(windows, axis=1)
