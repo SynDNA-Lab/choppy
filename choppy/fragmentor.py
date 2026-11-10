@@ -468,6 +468,14 @@ class Fragmentor:
             gaps,
         )
 
+    def add_candidates(self, starts, ends, extra_penalty=0.0, fragment: bool = False) -> None:
+        if fragment:
+            if self.fragment_overlaps is None:
+                raise ValueError("Fragment lengths were not set, so there is no fragment level")
+            self.fragment_overlaps._require_candidates().add(starts, ends, extra_penalty)
+        else:
+            self.segment_overlaps._require_candidates().add(starts, ends, extra_penalty)
+
     def chop(self) -> Assembly:
         """Cut the sequence into the fewest segments whose overlaps all satisfy the constraints."""
 

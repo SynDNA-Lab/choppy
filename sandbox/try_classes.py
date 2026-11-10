@@ -26,20 +26,20 @@ f = Fragmentor(seq,
                min_segment_overlap_len=50, max_segment_overlap_len=100,
                min_segment_len=200, max_segment_len=1000,
                min_step=10)              
-f.add_condition(SelfHomology(kmer=15, max_val=0.0))
-f.add_condition(BGHomology(kmer=15, max_val=0.0, bg_fasta="data/S_cerevisiae-small.fa"))
+f.add_condition(SelfHomology(kmer=15, max_val=0.0), name = "")
+f.add_condition(BGHomology(kmer=15, max_val=1.5, cap = 1024, bg_fasta="data/S_cerevisiae-small.fa"))
 f.add_condition(BoundaryMotif(motif="GC", max_val=0.0))
-#asm = f.cut()   
+#asm = f.chop()   
 
 # %%
-f.segment_overlaps.constraints[2].plot_rows()
+f.segment_overlaps.constraints[1].plot_rows()
 
 # %%
 f.generate_candidates()
 f.plot_gap_lengths()
 
 # %%
-f.plot_rows()
+f.plot_rows(a = 0, b = 1000)
 
 #%%
 bm = BoundaryMotif(motif="GC", max_val=0.0)
