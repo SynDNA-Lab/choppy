@@ -4,15 +4,17 @@ Tests marked xfail document known bugs (see the reason). xfail is strict, so onc
 is fixed the test starts to "XPASS" and fails the run: remove the marker then.
 """
 import re
+from dataclasses import dataclass
 
 import numpy as np
 import pytest
 
 from choppy.constraints import (
-    AbstractCondition,
+    AbstractScorer,
     BackgroundKmers,
     BGHomology,
     BoundaryMotif,
+    Condition,
     KmerHomology,
     OverlapGrid,
     OverlapMap,
@@ -172,24 +174,43 @@ def test_overlap_map_lookups(grid):
     assert m.get_overlap(3, 3 + 7) == values[3, 2]
 
 
-# --------------------------------------------------------------------------- AbstractCondition
+# --------------------------------------------------------------------------- scorer and condition
 
 
-class ConstCondition(AbstractCondition):
-    """Fills the map from a fixed array, to test the base class in isolation."""
+@dataclass(frozen=True, eq=False)
+class ConstScorer(AbstractScorer):
+    """Fills the map from a fixed array, to test the base classes in isolation.
 
-    def __init__(self, fill=None, **kwargs):
-        super().__init__(**kwargs)
-        self.fill = fill
+    Compared by identity, as the array cannot be hashed: two instances are two scorers.
+    """
+    fill: object = None
+    __eq__ = object.__eq__
+    __hash__ = object.__hash__
 
-    def _fill_map(self, seq):
+    def _fill(self, seq, grid, values):
         if self.fill is not None:
-            self.map.values[:] = self.fill
+            values[:] = self.fill
+        return 1.0
 
 
-def test_abstract_condition_cannot_be_instantiated():
+def bound(scorer, seq, grid, **thresholds) -> Condition:
+    """A condition on scorer, bound to the map it builds over grid."""
+    c = Condition(scorer, **thresholds)
+    c.bind(scorer.build_map(seq, grid))
+    return c
+
+
+def test_abstract_scorer_cannot_be_instantiated():
     with pytest.raises(TypeError):
-        AbstractCondition()
+        AbstractScorer()
+
+
+def test_scorers_are_frozen_and_hashed_by_parameters():
+    assert BoundaryMotif("GC") == BoundaryMotif("GC")
+    assert hash(BoundaryMotif("GC")) == hash(BoundaryMotif("GC"))
+    assert BoundaryMotif("GC") != BoundaryMotif("CG")
+    with pytest.raises(AttributeError):
+        BoundaryMotif("GC").motif = "CG"
 
 
 @pytest.mark.parametrize(
@@ -201,64 +222,47 @@ def test_abstract_condition_cannot_be_instantiated():
         {"opt_val": 0.0, "min_val": 0.1, "max_val": 0.9},
     ],
 )
-def test_build_map_accepts_any_single_threshold(grid, kwargs):
-    c = ConstCondition(**kwargs)
-    assert c.build_map("A" * grid.seq_len, grid) is c.map
+def test_condition_accepts_any_single_threshold(grid, kwargs):
+    c = Condition(ConstScorer(), **kwargs)
+    assert c.map is None and c.grid is None
+    m = ConstScorer().build_map("A" * grid.seq_len, grid)
+    c.bind(m)
+    assert c.map is m and c.grid == grid
 
 
-def test_build_map_rejects_meaningless_condition(grid):
+def test_condition_rejects_no_threshold():
     """With no threshold at all a condition is neither a constraint nor an objective,
-    so scoring it is wasted work and almost certainly a mistake in the caller."""
+    which is almost certainly a mistake in the caller."""
     with pytest.raises(ValueError, match="neither a constraint nor an objective"):
-        ConstCondition().build_map("A" * grid.seq_len, grid)
+        Condition(ConstScorer())
 
 
-def test_meaningless_condition_is_rejected_before_binding(grid):
-    """The check runs before bind, so the rejected instance is left untouched and can
-    still be given a threshold and reused."""
-    c = ConstCondition()
-    with pytest.raises(ValueError, match="neither a constraint nor an objective"):
-        c.build_map("A" * grid.seq_len, grid)
-    assert c.grid is None and c.map is None
-    c.max_val = 0.5
-    c.build_map("A" * grid.seq_len, grid)
-    assert c.grid == grid
-
-
-def test_build_map_needs_grid():
-    with pytest.raises(ValueError, match="No grid bound"):
-        ConstCondition(opt_val=0.0).build_map("ACGT" * 5)
+def test_conditions_compare_by_identity():
+    scorer = BoundaryMotif("GC")
+    assert Condition(scorer, max_val=0) != Condition(scorer, max_val=0)
 
 
 def test_build_map_checks_seq_length(grid):
-    with pytest.raises(ValueError, match="long but the bound grid"):
-        ConstCondition(opt_val=0.0).build_map("A" * (grid.seq_len - 1), grid)
+    with pytest.raises(ValueError, match="long but the grid"):
+        ConstScorer().build_map("A" * (grid.seq_len - 1), grid)
 
 
 def test_build_map_defaults_to_worst_score(grid):
-    m = ConstCondition(opt_val=0.0).build_map("A" * grid.seq_len, grid)
+    m = ConstScorer().build_map("A" * grid.seq_len, grid)
     assert m.values.dtype == np.float16
     assert m.values.shape == grid.shape
+    assert m.grid == grid
     assert np.all(m.values == 1.0)
 
 
-def test_bind_same_grid_is_idempotent(grid):
-    c = ConstCondition()
-    c.bind(grid)
-    c.bind(OverlapGrid(grid.seq_len, grid.min_len, grid.max_len))  # equal, not identical
-    assert c.grid == grid
-
-
-def test_bind_rejects_different_grid(grid):
-    c = ConstCondition()
-    c.bind(grid)
+def test_bind_rejects_a_second_map(grid):
+    c = bound(ConstScorer(), "A" * grid.seq_len, grid, max_val=0.5)
     with pytest.raises(ValueError, match="already bound"):
-        c.bind(OverlapGrid(grid.seq_len, grid.min_len, grid.max_len + 1))
+        c.bind(ConstScorer().build_map("A" * grid.seq_len, grid))
 
 
 def test_build_map_scores_overlaps_past_the_end_worst(grid):
-    c = ConstCondition(fill=0.0, opt_val=0.0)
-    values = c.build_map("A" * grid.seq_len, grid).values
+    values = ConstScorer(fill=0.0).build_map("A" * grid.seq_len, grid).values
     past_end = grid.ends > grid.seq_len
     assert past_end.any() and (~past_end).any()
     assert np.all(values[past_end] == 1.0)
@@ -266,8 +270,8 @@ def test_build_map_scores_overlaps_past_the_end_worst(grid):
 
 
 def test_feasible_requires_map():
-    with pytest.raises(ValueError, match="build_map"):
-        ConstCondition(max_val=0.5).feasible()
+    with pytest.raises(ValueError, match="bound to a map"):
+        Condition(ConstScorer(), max_val=0.5).feasible()
 
 
 VALUES = np.array([[0.0, 0.25, 0.5], [0.75, 1.0, np.nan]], dtype=np.float16)
@@ -284,8 +288,7 @@ SMALL_GRID = OverlapGrid(seq_len=3, min_len=2, max_len=4)  # shape (2, 3)
     ],
 )
 def test_feasible_thresholds(kwargs, expected):
-    c = ConstCondition(**kwargs)
-    c.build_map("AAA", SMALL_GRID)
+    c = bound(ConstScorer(), "AAA", SMALL_GRID, **kwargs)
     c.map.values[:] = VALUES  # bypass the past-end rule: this tests the thresholds alone
     np.testing.assert_array_equal(c.feasible(), np.array(expected, dtype=bool))
 
@@ -383,15 +386,17 @@ def test_background_from_fasta_uppercases(tmp_path):
 # --------------------------------------------------------------------------- KmerHomology
 
 
+@dataclass(frozen=True, eq=False)
 class StubHomology(KmerHomology):
-    """KmerHomology with fixed per-kmer scores, to test the sliding-window max."""
+    """KmerHomology with fixed per-kmer scores, to test the sliding-window max.
 
-    def __init__(self, scores, **kwargs):
-        super().__init__(**kwargs)
-        self.scores = np.asarray(scores, dtype=np.float16)
+    Compared by identity, as the scores array cannot be hashed."""
+    scores: object = None
+    __eq__ = object.__eq__
+    __hash__ = object.__hash__
 
     def _kmer_scores(self, seq):
-        return self.scores, 1.0
+        return np.asarray(self.scores, dtype=np.float16), 1.0
 
 
 def brute_force_kmer_map(scores, grid, kmer):
@@ -414,9 +419,8 @@ def test_kmer_homology_is_window_max(kmer, min_len, max_len):
     rng = np.random.default_rng(kmer * 100 + min_len)
     scores = rng.random(L - kmer + 1).astype(np.float16) * 0.9
     grid = OverlapGrid(L, min_len, max_len)
-    c = StubHomology(scores, kmer=kmer, opt_val=0.0)
-    c.build_map("A" * L, grid)
-    np.testing.assert_array_equal(c.map.values, brute_force_kmer_map(scores, grid, kmer))
+    m = StubHomology(kmer=kmer, scores=scores).build_map("A" * L, grid)
+    np.testing.assert_array_equal(m.values, brute_force_kmer_map(scores, grid, kmer))
 
 
 @pytest.mark.parametrize("kmer,min_len,max_len", [(6, 5, 8), (9, 5, 12), (12, 4, 10)])
@@ -426,20 +430,19 @@ def test_kmer_homology_short_overlaps_pass(kmer, min_len, max_len):
     rng = np.random.default_rng(kmer)
     scores = (rng.random(L - kmer + 1) * 0.9 + 0.1).astype(np.float16)  # all non-zero
     grid = OverlapGrid(L, min_len, max_len)
-    c = StubHomology(scores, kmer=kmer, opt_val=0.0)
-    c.build_map("A" * L, grid)
-    short = c.map.values[:, :kmer - min_len]
+    m = StubHomology(kmer=kmer, scores=scores).build_map("A" * L, grid)
+    short = m.values[:, :kmer - min_len]
     assert np.all(short[(grid.ends <= L)[:, :kmer - min_len]] == 0.0)
-    np.testing.assert_array_equal(c.map.values, brute_force_kmer_map(scores, grid, kmer))
+    np.testing.assert_array_equal(m.values, brute_force_kmer_map(scores, grid, kmer))
 
 
 def test_kmer_homology_all_overlaps_shorter_than_kmer_pass():
     grid = OverlapGrid(40, 5, 8)
-    c = StubHomology(np.ones(21), kmer=20, opt_val=0.0)
-    c.build_map("A" * 40, grid)
+    m = StubHomology(kmer=20, scores=np.ones(21)).build_map("A" * 40, grid)
     inside = grid.ends <= grid.seq_len
-    assert np.all(c.map.values[inside] == 0.0)
-    assert np.all(c.map.values[~inside] == 1.0)
+    assert np.all(m.values[inside] == 0.0)
+    assert np.all(m.values[~inside] == 1.0)
+    assert m.multiplier == 1.0
 
 
 def write_fasta(path, seqs):
@@ -486,12 +489,28 @@ def test_bg_homology_from_npz_builds_map(tmp_path):
     npz = tmp_path / "bg.npz"
     BackgroundKmers.from_seqs([random_seq(300, seed=5)], 4).save(str(npz))
     seq = random_seq(60, seed=6)
-    c = BGHomology(kmer=4, bg_npz=str(npz), max_val=0.5)
+    c = BGHomology(kmer=4, bg_npz=str(npz))
     grid = OverlapGrid(len(seq), 6, 10)
-    c.build_map(seq, grid)
+    m = c.build_map(seq, grid)
     scores, multiplier = c._kmer_scores(seq)
     expected = brute_force_kmer_map(scores, grid, 4)
-    np.testing.assert_array_equal(c.map.values, expected)
+    np.testing.assert_array_equal(m.values, expected)
+    assert m.multiplier == multiplier == c.cap
+
+
+def test_bg_homology_equality_ignores_the_loaded_background(tmp_path):
+    """Equal source, kmer and cap make equal scorers, though each loaded its own copy."""
+    fasta = write_fasta(tmp_path / "bg.fa", ["A" * 30])
+    a, b = BGHomology(kmer=4, cap=10, bg_fasta=fasta), BGHomology(kmer=4, cap=10, bg_fasta=fasta)
+    assert a.bg is not b.bg
+    assert a == b and hash(a) == hash(b)
+    assert a != BGHomology(kmer=4, cap=5, bg_fasta=fasta)
+
+
+def test_bg_homology_lowered_cap_takes_part_in_equality(tmp_path):
+    """cap is settled at construction, so caps that both clamp to the max count are equal."""
+    fasta = write_fasta(tmp_path / "bg.fa", ["ACGTTGCA"])
+    assert BGHomology(kmer=3, cap=100, bg_fasta=fasta) == BGHomology(kmer=3, cap=2048, bg_fasta=fasta)
 
 
 def test_bg_homology_fasta_wins_over_npz(tmp_path):
@@ -558,8 +577,7 @@ def brute_force_motif_map(seq, grid, motif):
 def test_boundary_motif_non_overlapping_occurrences():
     seq = "AAGCAAAAGCAAAAAAAGCTTGCAAA"
     grid = OverlapGrid(len(seq), 4, 12)
-    c = BoundaryMotif(motif="GC", max_val=0)
-    c.build_map(seq, grid)
+    c = bound(BoundaryMotif(motif="GC"), seq, grid, max_val=0)
     expected = brute_force_motif_map(seq, grid, "GC")
     np.testing.assert_array_equal(c.map.values, expected)
     assert c.map.get_overlap(2, 10) == 0.0   # GCAAAAGC
@@ -569,28 +587,25 @@ def test_boundary_motif_non_overlapping_occurrences():
 def test_boundary_motif_regex():
     seq = "AAGCAAAACGAAAA"
     grid = OverlapGrid(len(seq), 4, 10)
-    c = BoundaryMotif(motif="[GC][GC]", opt_val=0.0)
-    c.build_map(seq, grid)
-    assert c.map.get_overlap(2, 10) == 0.0   # GC ... CG
-    assert c.map.get_overlap(2, 9) == 1.0
+    m = BoundaryMotif(motif="[GC][GC]").build_map(seq, grid)
+    assert m.get_overlap(2, 10) == 0.0   # GC ... CG
+    assert m.get_overlap(2, 9) == 1.0
 
 
 def test_boundary_motif_overlapping_occurrences():
     seq = "AGGGAAAAAAGGGA"
     grid = OverlapGrid(len(seq), 4, 12)
-    c = BoundaryMotif(motif="GG", opt_val=0.0)
-    c.build_map(seq, grid)
+    m = BoundaryMotif(motif="GG").build_map(seq, grid)
     expected = brute_force_motif_map(seq, grid, "GG")
-    np.testing.assert_array_equal(c.map.values, expected)
+    np.testing.assert_array_equal(m.values, expected)
 
 
 def test_boundary_motif_past_end_scores_worst_when_sequence_ends_on_motif():
     seq = "ACGTACGTAA"
     grid = OverlapGrid(len(seq), 2, 4)
-    c = BoundaryMotif(motif="A", max_val=0.5)
-    c.build_map(seq, grid)
-    np.testing.assert_array_equal(c.map.values, brute_force_motif_map(seq, grid, "A"))
-    assert list(c.map.values[8]) == [0.0, 1.0, 1.0]   # only (8, 10) is a real overlap
+    m = BoundaryMotif(motif="A").build_map(seq, grid)
+    np.testing.assert_array_equal(m.values, brute_force_motif_map(seq, grid, "A"))
+    assert list(m.values[8]) == [0.0, 1.0, 1.0]   # only (8, 10) is a real overlap
 
 
 # --------------------------------------------------------------------------- plotting
@@ -618,8 +633,7 @@ def test_plot_rows_takes_each_row_min_over_lengths(plt):
         [[0.5, 0.25, 0.75], [1.0, 0.5, 0.125], [0.0, 1.0, 1.0], [0.75, 0.75, 0.75]] + [[1.0] * 3] * 5,
         dtype=np.float16,
     )
-    c = ConstCondition(fill=fill, max_val=0.5)
-    c.build_map("A" * 10, grid)
+    c = bound(ConstScorer(fill=fill), "A" * 10, grid, max_val=0.5)
     x, y = plotted_points(c.plot_rows(0, 4))
     assert list(x) == [0, 1, 2, 3]
     assert list(y) == [0.25, 0.125, 0.0, 0.75]
@@ -634,8 +648,7 @@ def test_plot_rows_takes_each_row_min_over_lengths(plt):
     ],
 )
 def test_plot_rows_draws_only_set_thresholds(plt, grid, kwargs, labels):
-    c = ConstCondition(fill=0.3, **kwargs)
-    c.build_map("A" * grid.seq_len, grid)
+    c = bound(ConstScorer(fill=0.3), "A" * grid.seq_len, grid, **kwargs)
     ax = c.plot_rows(0, 2)
     drawn = [line.get_label().split(" =")[0] for line in ax.lines]
     assert drawn == labels
@@ -644,20 +657,23 @@ def test_plot_rows_draws_only_set_thresholds(plt, grid, kwargs, labels):
 
 
 def test_plot_rows_uses_given_axes(plt, grid):
-    c = ConstCondition(max_val=0.5)
-    c.build_map("A" * grid.seq_len, grid)
+    c = bound(ConstScorer(), "A" * grid.seq_len, grid, max_val=0.5)
     _, ax = plt.subplots()
     assert c.plot_rows(0, 1, ax=ax) is ax
 
 
+def test_plot_rows_titles_with_the_scorer(plt, grid):
+    c = bound(BoundaryMotif(), "A" * grid.seq_len, grid, max_val=0.5)
+    assert c.plot_rows(0, 1).get_title().startswith("BoundaryMotif:")
+
+
 def test_plot_rows_requires_map(plt):
-    with pytest.raises(ValueError, match="build_map"):
-        ConstCondition(max_val=0.5).plot_rows(0, 1)
+    with pytest.raises(ValueError, match="bound to a map"):
+        Condition(ConstScorer(), max_val=0.5).plot_rows(0, 1)
 
 
 @pytest.mark.parametrize("a,b", [(-1, 2), (2, 2), (3, 1), (0, 10**6)])
 def test_plot_rows_rejects_bad_range(plt, grid, a, b):
-    c = ConstCondition(max_val=0.5)
-    c.build_map("A" * grid.seq_len, grid)
+    c = bound(ConstScorer(), "A" * grid.seq_len, grid, max_val=0.5)
     with pytest.raises(ValueError, match="Row range"):
         c.plot_rows(a, b)

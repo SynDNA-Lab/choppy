@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field, InitVar
 import warnings
 import numpy as np
-from choppy.constraints import AbstractCondition, OverlapGrid, check_seq
+from choppy.constraints import Condition, OverlapGrid, check_seq
 
 
 class NoAssemblyError(RuntimeError):
@@ -118,8 +118,8 @@ class Overlaps:
     max_len: int # maximal overlap length
     min_step: int | None = None # thinning parameter for overlaps (delta_start + delta_end >= min_step)
 
-    objectives: list[AbstractCondition] = field(default_factory=list)
-    constraints: list[AbstractCondition] = field(default_factory=list)
+    objectives: list[Condition] = field(default_factory=list)
+    constraints: list[Condition] = field(default_factory=list)
     candidates: Candidates | None = None  # None until generated
 
     grid: OverlapGrid = field(init=False, repr=False)
@@ -133,8 +133,8 @@ class Overlaps:
     def shape(self) -> tuple[int, int]:
         return self.grid.shape
 
-    def add_condition(self, condition: AbstractCondition) -> None:
-        condition.build_map(self.seq, self.grid)
+    def add_condition(self, condition: Condition) -> None:
+        condition.bind(condition.scorer.build_map(self.seq, self.grid))
         if condition.opt_val is not None:
             self.objectives.append(condition)
         if condition.min_val is not None or condition.max_val is not None:
@@ -245,7 +245,7 @@ class Overlaps:
         axes = axes[:, 0]
         for ax, (i, constraint) in zip(axes, selected):
             constraint.plot_rows(a, b, ax=ax)
-            ax.set_title(f"[{i}] {type(constraint).__name__}")
+            ax.set_title(f"[{i}] {type(constraint.scorer).__name__}")
             ax.set_xlabel("")
         axes[-1].set_xlabel("overlap start")
         fig.suptitle(f"Overlaps starting in [{a}, {b})")
@@ -392,7 +392,7 @@ class Fragmentor:
             return longest
         return max_overlap_len
 
-    def add_condition(self, condition: AbstractCondition, fragment: bool = False) -> None:
+    def add_condition(self, condition: Condition, fragment: bool = False) -> None:
         if fragment:
             if self.fragment_overlaps is None:
                 raise ValueError("Fragment lengths were not set, so there is no fragment level")

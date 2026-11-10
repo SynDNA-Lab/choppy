@@ -141,50 +141,69 @@ class OverlapMap:
     def get_values(self) -> np.ndarray:
         return self.values * self.multiplier
 
-@dataclass
-class AbstractCondition(ABC):
+@dataclass(frozen=True)
+class AbstractScorer(ABC):
+    """Scores every overlap of a grid: the map-building half of a condition.
+
+    A scorer holds only the parameters that shape its map, never thresholds, so it is
+    frozen and hashed by those parameters: two equal scorers would build the same map.
+    Subclasses must be frozen dataclasses too.
+    """
+
+    def build_map(self, seq: str, grid: OverlapGrid) -> OverlapMap:
+        """Score every overlap of grid.
+
+        Scores run from 0 to 1 (times the multiplier _fill returns). 0 is always the best
+        score, 1 is the worst.
+
+        Cells whose overlap runs past the end of the sequence always score 1, whatever
+        _fill wrote there, so nothing downstream has to filter them out.
+        """
+        if len(seq) != grid.seq_len:
+            raise ValueError(f"Sequence is {len(seq)} long but the grid is for {grid.seq_len}")
+        values = np.full(grid.shape, 1.0, dtype=np.float16)
+        multiplier = self._fill(seq, grid, values)
+        values[grid.ends > grid.seq_len] = 1.0
+        return OverlapMap(grid, values, multiplier)
+
+    @abstractmethod
+    def _fill(self, seq: str, grid: OverlapGrid, values: np.ndarray) -> float:
+        """Write the scores into values (shaped like grid, pre-filled with 1) and return
+        the multiplier that turns them back into the scorer's own units."""
+
+
+@dataclass(eq=False)
+class Condition:
+    """A scorer with thresholds: a constraint (min_val and/or max_val), an objective
+    (opt_val), or both.
+
+    It compares by identity, unlike its scorer: two conditions on the same scorer are
+    still separate conditions. The map is attached by the owning Overlaps.
+    """
+    scorer: AbstractScorer
     min_val: np.float16 | None = None
     max_val: np.float16 | None = None
     opt_val: np.float16 | None = None
-    grid: OverlapGrid | None = field(default=None, init=False, repr=False)
     map: OverlapMap | None = field(default=None, init=False, repr=False)
 
-    def bind(self, grid: OverlapGrid) -> None:
-        """Attach the grid this condition is scored on, normally by the owning Overlaps."""
-        if self.grid is not None and self.grid != grid:
-            raise ValueError(
-                f"Condition is already bound to {self.grid}, cannot rebind to {grid}. "
-                f"Use a separate instance for the other level."
-            )
-        self.grid = grid
-
-    def build_map(self, seq: str, grid: OverlapGrid | None = None) -> OverlapMap:
-        """Score this condition over every overlap of the grid it is bound to.
-
-        Scores run from 0 to 1 (times an optional multiplier). 0 is always the best score,
-        1 is the worst.
-
-        Cells whose overlap runs past the end of the sequence always score 1, whatever
-        _fill_map wrote there, so nothing downstream has to filter them out.
-        """
+    def __post_init__(self) -> None:
         if self.min_val is None and self.max_val is None and self.opt_val is None:
-            raise ValueError("Condition has no thresholds or objectives set: it is neither a constraint nor an objective "
-                             "and build_map is meaningless")
-        if grid is not None:
-            self.bind(grid)
-        if self.grid is None:
-            raise ValueError("No grid bound: pass one to build_map, or call bind first")
-        if len(seq) != self.grid.seq_len:
-            raise ValueError(
-                f"Sequence is {len(seq)} long but the bound grid is for {self.grid.seq_len}"
-            )
-        self.map = OverlapMap(self.grid, np.full(self.grid.shape, 1.0, dtype=np.float16))
-        self._fill_map(seq)
-        self.map.values[self.grid.ends > self.grid.seq_len] = 1.0
-        return self.map
+            raise ValueError("Condition has no thresholds or objectives set: it is neither a constraint "
+                             "nor an objective")
 
-    @abstractmethod
-    def _fill_map(self, seq: str) -> None: ...
+    @property
+    def grid(self) -> OverlapGrid | None:
+        return None if self.map is None else self.map.grid
+
+    def bind(self, overlap_map: OverlapMap) -> None:
+        """Attach the map this condition reads its scores from, normally by the owning
+        Overlaps. A condition belongs to one level only, so it is bound once."""
+        if self.map is not None:
+            raise ValueError(
+                f"Condition is already bound to a map on {self.map.grid}. "
+                f"Use a separate Condition for the other level."
+            )
+        self.map = overlap_map
 
     def feasible(self) -> np.ndarray:
         """Boolean mask of the overlaps that satisfy this condition as a constraint.
@@ -194,7 +213,7 @@ class AbstractCondition(ABC):
         infeasible without a separate check for it.
         """
         if self.map is None:
-            raise ValueError("build_map must be called before feasible")
+            raise ValueError("Condition must be bound to a map before feasible")
         values = self.map.get_values()
         if self.min_val is None and self.max_val is None:
             return np.ones(values.shape, dtype=bool)
@@ -212,7 +231,7 @@ class AbstractCondition(ABC):
     def _plot_axes(self, ax):
         """The axes to draw on: ax itself, or a fresh figure's when ax is None."""
         if self.map is None:
-            raise ValueError("build_map must be called before plotting")
+            raise ValueError("Condition must be bound to a map before plotting")
         if ax is None:
             import matplotlib.pyplot as plt
             _, ax = plt.subplots(figsize=(8, 4))
@@ -247,19 +266,20 @@ class AbstractCondition(ABC):
         self._plot_thresholds(ax)
         ax.set_xlabel("overlap start")
         ax.set_ylabel("score")
-        ax.set_title(f"{type(self).__name__}: overlaps starting in [{a}, {b})")
+        ax.set_title(f"{type(self.scorer).__name__}: overlaps starting in [{a}, {b})")
         ax.grid(True, color="0.9")
         ax.legend()
         return ax
 
-## TODO: rewrite against the condition's own thresholds (max_val) and fill the whole map
-# class PolyX(AbstractCondition):
+## TODO: rewrite as a scorer (thresholds live on the Condition) and fill the whole map
+# class PolyX(AbstractScorer):
 #
 #     def score(self, seq: str) -> np.float16:
 #         return np.float16(len(seq) > self.max_len)
 #
-#     def _fill_map(self, seq: str) -> None:
-#         self.map.values[0, 0] = self.score(seq)
+#     def _fill(self, seq, grid, values) -> float:
+#         values[0, 0] = self.score(seq)
+#         return 1.0
 
 @dataclass
 class BackgroundKmers:
@@ -352,55 +372,63 @@ class BackgroundKmers:
         counts[found] = self.counts[idx[found]]
         return counts
 
-@dataclass
-class KmerHomology(AbstractCondition):
+@dataclass(frozen=True)
+class KmerHomology(AbstractScorer):
     kmer: int = 15
-    cap: int = 2048
 
     @abstractmethod
-    def _kmer_scores(self, seq: str) -> np.ndarray: ...
+    def _kmer_scores(self, seq: str) -> tuple[np.ndarray, float]: ...
 
-    def _fill_map(self, seq: str) -> None:
+    def _fill(self, seq: str, grid: OverlapGrid, values: np.ndarray) -> float:
         """Worst kmer score over each overlap, as a running max along the length axis.
 
         An overlap shorter than kmer holds no complete kmer, so there is no evidence of
         homology against it and it keeps the best score, 0. Those are the first
         `kmer - min_len` length columns, which have no window to slide over.
         """
-        n_cols = self.grid.shape[1]
-        n_short = min(max(self.kmer - self.grid.min_len, 0), n_cols)
-        self.map.values[:, :n_short] = 0.0
+        n_cols = grid.shape[1]
+        n_short = min(max(self.kmer - grid.min_len, 0), n_cols)
+        values[:, :n_short] = 0.0
         if n_short == n_cols:  # kmer > max_len: no overlap is long enough to hold one
-            return
+            return 1.0
 
         scores, multiplier = self._kmer_scores(seq)
-        padded = np.concatenate([scores, np.full(self.grid.max_len - self.grid.min_len, 1.0, dtype=np.float16)])
-        windows = np.lib.stride_tricks.sliding_window_view(padded, self.grid.max_len - self.kmer + 1)
+        padded = np.concatenate([scores, np.full(grid.max_len - grid.min_len, 1.0, dtype=np.float16)])
+        windows = np.lib.stride_tricks.sliding_window_view(padded, grid.max_len - self.kmer + 1)
         accumulated = np.maximum.accumulate(windows, axis=1)
         # column j is the overlap of length min_len + j, whose last kmer starts at
         # offset min_len + j - kmer; the short columns above are the negative ones.
-        self.map.values[:, n_short:] = accumulated[:, max(self.grid.min_len - self.kmer, 0):]
-        self.map.multiplier = multiplier
+        values[:, n_short:] = accumulated[:, max(grid.min_len - self.kmer, 0):]
+        return multiplier
 
-@dataclass
+@dataclass(frozen=True)
 class BGHomology(KmerHomology):
+    """Kmer homology against a background (e.g. the host genome), counts capped at cap.
+
+    The loaded background is not part of equality or the hash: two scorers on the same
+    background source, kmer and cap are equal. cap is lowered to the highest count in
+    the background when that is smaller, so it takes its final value at construction.
+    """
+    cap: int = 2048
     bg_fasta: str | None = None
     bg_npz: str | None = None
-    bg: BackgroundKmers | None = field(default=None, init=False, repr=False)
+    bg: BackgroundKmers | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self):
         if self.cap < 1 or self.cap > 2048:
             raise ValueError(f"cap must be between 1 and 2048, got {self.cap}")
-        self._set_bg()
+        # frozen: the fields settled here are set through object.__setattr__, before
+        # anything can have hashed the instance
+        object.__setattr__(self, "bg", self._load_bg())
         if self.kmer != self.bg.kmer:
             raise ValueError(f"kmer mismatch: {self.kmer} != {self.bg.kmer}")
         max_counts = np.max(self.bg.counts)
         if max_counts < self.cap:
-            self.cap = int(max_counts)
+            object.__setattr__(self, "cap", int(max_counts))
         else:
             self.bg.counts = np.minimum(self.bg.counts, self.cap)
 
-    def _set_bg(self) -> None:
+    def _load_bg(self) -> BackgroundKmers:
         """Load the background: from the FASTA if there is one, otherwise from the npz."""
         if self.bg_fasta is None and self.bg_npz is None:
             raise ValueError("No background provided: set either bg_fasta or bg_npz")
@@ -409,16 +437,15 @@ class BGHomology(KmerHomology):
                 warnings.warn(
                     "both bg_fasta and bg_npz are set; bg_fasta takes priority and "
                     f"{self.bg_npz} is ignored",
-                    stacklevel=3,
+                    stacklevel=4,
                 )
-            self.bg = BackgroundKmers.from_fasta(self.bg_fasta, self.kmer)
-        else:
-            self.bg = BackgroundKmers.load(self.bg_npz)
+            return BackgroundKmers.from_fasta(self.bg_fasta, self.kmer)
+        return BackgroundKmers.load(self.bg_npz)
 
     def _kmer_scores(self, seq: str) -> tuple[np.ndarray, float]:
         return np.float16(self.bg.lookup(seq) / self.cap), float(self.cap)
 
-@dataclass
+@dataclass(frozen=True)
 class SelfHomology(KmerHomology):
 
     def _kmer_scores(self, seq: str) -> tuple[np.ndarray, float]:
@@ -426,8 +453,8 @@ class SelfHomology(KmerHomology):
         multiplier = float(max(repeats.max(), 1))
         return np.float16(repeats / multiplier), multiplier
 
-@dataclass
-class BoundaryMotif(AbstractCondition):
+@dataclass(frozen=True)
+class BoundaryMotif(AbstractScorer):
     """Overlaps that both open and close on a match of the motif score 0, the rest 1.
 
     The two ends are independent: the motif opening the overlap and the one closing it are
@@ -438,8 +465,7 @@ class BoundaryMotif(AbstractCondition):
     """
     motif: str = "GC"
 
-    def _fill_map(self, seq: str) -> None:
-        grid = self.grid
+    def _fill(self, seq: str, grid: OverlapGrid, values: np.ndarray) -> float:
         n_starts = grid.shape[0]
         # the lookahead keeps the match zero-width, so the scan does not skip past an
         # occurrence that starts inside the previous one; group 1 carries the real span.
@@ -458,5 +484,6 @@ class BoundaryMotif(AbstractCondition):
         shuts = closes[np.minimum(grid.ends, grid.seq_len)]
 
         bounded = opens[:, None] & shuts
-        self.map.values[:] = (~bounded).astype(np.float16)
+        values[:] = (~bounded).astype(np.float16)
+        return 1.0
 

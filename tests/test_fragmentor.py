@@ -1,19 +1,32 @@
 import itertools
+from dataclasses import dataclass
+
 import numpy as np
 import pytest
 
-from choppy.constraints import AbstractCondition, BoundaryMotif, OverlapGrid
+from choppy.constraints import AbstractScorer, BoundaryMotif, Condition, OverlapGrid
 from choppy.fragmentor import Candidates, Fragmentor, GapError, NoAssemblyError, Overlaps
 
 
-class ConstCondition(AbstractCondition):
-    def __init__(self, fill=None, **kwargs):
-        super().__init__(**kwargs)
-        self.fill = fill
+@dataclass(frozen=True, eq=False)
+class ConstScorer(AbstractScorer):
+    """Fills the map from a fixed array; compared by identity, as arrays cannot be hashed."""
+    fill: object = None
+    __eq__ = object.__eq__
+    __hash__ = object.__hash__
 
-    def _fill_map(self, seq):
+    def _fill(self, seq, grid, values):
         if self.fill is not None:
-            self.map.values[:] = self.fill
+            values[:] = self.fill
+        return 1.0
+
+
+def const(fill=None, **thresholds) -> Condition:
+    return Condition(ConstScorer(fill), **thresholds)
+
+
+def motif(motif="GC", **thresholds) -> Condition:
+    return Condition(BoundaryMotif(motif), **thresholds)
 
 
 def random_seq(n: int, seed: int = 0) -> str:
@@ -35,7 +48,7 @@ def test_overlaps_min_step_one_disables_thinning():
 
 def test_overlaps_instances_do_not_share_lists():
     a, b = Overlaps("A" * 30, 4, 7), Overlaps("A" * 30, 4, 7)
-    a.add_condition(ConstCondition(max_val=0.5))
+    a.add_condition(const(max_val=0.5))
     assert b.constraints == [] and b.objectives == []
 
 
@@ -50,31 +63,12 @@ def test_overlaps_instances_do_not_share_lists():
 )
 def test_add_condition_routing(kwargs, is_objective, is_constraint):
     ov = Overlaps("A" * 30, 4, 7)
-    c = ConstCondition(**kwargs)
+    c = const(**kwargs)
     ov.add_condition(c)
     assert (c in ov.objectives) == is_objective
     assert (c in ov.constraints) == is_constraint
     assert c.grid == ov.grid
     assert c.map is not None and c.map.values.shape == ov.shape
-
-
-def test_add_condition_rejects_meaningless_condition():
-    """A condition with no threshold is neither objective nor constraint: add_condition
-    builds its map first, so the rejection has to leave both lists untouched."""
-    ov = Overlaps("A" * 30, 4, 7)
-    c = ConstCondition()
-    with pytest.raises(ValueError, match="neither a constraint nor an objective"):
-        ov.add_condition(c)
-    assert ov.objectives == [] and ov.constraints == []
-    assert c.map is None
-
-
-def test_fragmentor_add_condition_rejects_meaningless_condition():
-    f = Fragmentor("ACGT" * 100, **SEG, **FRAG)
-    for fragment in (False, True):
-        with pytest.raises(ValueError, match="neither a constraint nor an objective"):
-            f.add_condition(BoundaryMotif(), fragment=fragment)
-    assert f.segment_overlaps.constraints == [] and f.fragment_overlaps.constraints == []
 
 
 def test_feasible_mask_without_constraints_is_all_true():
@@ -87,9 +81,9 @@ def test_feasible_mask_is_and_of_constraints():
     rng = np.random.default_rng(0)
     a = rng.random(ov.shape).astype(np.float16)
     b = rng.random(ov.shape).astype(np.float16)
-    ov.add_condition(ConstCondition(fill=a, max_val=0.6))
-    ov.add_condition(ConstCondition(fill=b, min_val=0.3))
-    ov.add_condition(ConstCondition(fill=np.ones(ov.shape), opt_val=0.0))  # objective only
+    ov.add_condition(const(fill=a, max_val=0.6))
+    ov.add_condition(const(fill=b, min_val=0.3))
+    ov.add_condition(const(fill=np.ones(ov.shape), opt_val=0.0))  # objective only
     inside = ov.grid.ends <= ov.grid.seq_len  # past the end every score is 1
     expected = np.where(inside, (a <= 0.6) & (b >= 0.3), (1.0 <= 0.6) & (1.0 >= 0.3))
     np.testing.assert_array_equal(ov.feasible_mask(), expected)
@@ -176,7 +170,7 @@ def test_thin_result_respects_min_step(step):
 def test_generate_candidates_respects_constraints_and_edges():
     seq = random_seq(200, seed=3)
     ov = Overlaps(seq, 10, 15)
-    ov.add_condition(BoundaryMotif(motif="[GC]", max_val=0))
+    ov.add_condition(motif("[GC]", max_val=0))
     cands = ov.generate_candidates(min_edge_len=40)
     assert cands is ov.candidates
     assert list(cands) == sorted(cands)
@@ -194,7 +188,7 @@ def test_generate_candidates_respects_constraints_and_edges():
 
 def test_generate_candidates_empty():
     ov = Overlaps("A" * 100, 10, 15)
-    ov.add_condition(BoundaryMotif(motif="GC", max_val=0))
+    ov.add_condition(motif("GC", max_val=0))
     cands = ov.generate_candidates(min_edge_len=31)
     assert cands.n_overlaps == 0 and list(cands) == [(0, 0), (100, 100)]
 
@@ -273,7 +267,7 @@ def test_fragmentor_fragment_length_validation(override, match):
 
 def test_fragmentor_add_condition_routing():
     f = Fragmentor("ACGT" * 100, **SEG, **FRAG)
-    seg_c, frag_c = BoundaryMotif(max_val=0), BoundaryMotif(max_val=0)
+    seg_c, frag_c = motif(max_val=0), motif(max_val=0)
     f.add_condition(seg_c)
     f.add_condition(frag_c, fragment=True)
     assert f.segment_overlaps.constraints == [seg_c]
@@ -283,7 +277,7 @@ def test_fragmentor_add_condition_routing():
 
 def test_fragmentor_same_condition_on_both_levels_is_rejected():
     f = Fragmentor("ACGT" * 100, **SEG, **FRAG)
-    c = BoundaryMotif(max_val=0)
+    c = motif(max_val=0)
     f.add_condition(c)
     with pytest.raises(ValueError, match="already bound"):
         f.add_condition(c, fragment=True)
@@ -292,7 +286,7 @@ def test_fragmentor_same_condition_on_both_levels_is_rejected():
 def test_fragmentor_fragment_condition_without_fragment_level():
     f = Fragmentor("ACGT" * 100, **SEG)
     with pytest.raises(ValueError, match="no fragment level"):
-        f.add_condition(BoundaryMotif(max_val=0), fragment=True)
+        f.add_condition(motif(max_val=0), fragment=True)
 
 
 @pytest.mark.parametrize("n", [1, 16, 99])
@@ -414,16 +408,20 @@ def test_fragmentor_validates_once_for_every_grid():
 # --------------------------------------------------------------------------- gap check
 
 
-class BlockRegion(AbstractCondition):
+@dataclass(frozen=True)
+class BlockRegion(AbstractScorer):
+    """Scores 1 every overlap that touches [a, b), 0 the rest."""
+    a: int
+    b: int
+
+    def _fill(self, seq, grid, values):
+        values[:] = (grid.starts < self.b) & (grid.ends > self.a)
+        return 1.0
+
+
+def block(a, b) -> Condition:
     """Rejects every overlap that touches [a, b)."""
-
-    def __init__(self, a, b):
-        super().__init__(max_val=0.5)
-        self.a, self.b = a, b
-
-    def _fill_map(self, seq):
-        touches = (self.grid.starts < self.b) & (self.grid.ends > self.a)
-        self.map.values[:] = touches
+    return Condition(BlockRegion(a, b), max_val=0.5)
 
 
 @pytest.mark.parametrize("a", [300, 500])
@@ -431,7 +429,7 @@ def test_chop_reports_unbridgeable_gap(a):
     # SEG: the shortest crossing opens on a 20 bp overlap ending at a and closes on a
     # 20 bp one starting at a + 161, so it is 161 + 2 * 20 = 201 bp, one over 200
     f = Fragmentor(random_seq(1000), **SEG)
-    f.add_condition(BlockRegion(a, a + 161))
+    f.add_condition(block(a, a + 161))
     with pytest.raises(GapError, match="add candidate overlaps manually") as info:
         f.chop()
     assert info.value.gaps == [(a - 20, a + 181)]
@@ -441,14 +439,14 @@ def test_chop_reports_unbridgeable_gap(a):
 
 def test_chop_bridges_gap_just_under_the_limit():
     f = Fragmentor(random_seq(1000), **SEG)
-    f.add_condition(BlockRegion(500, 660))
+    f.add_condition(block(500, 660))
     asm = f.chop()
     assert asm.segments[0][0] == 0 and asm.segments[-1][1] == 1000
 
 
 def test_chop_reports_whole_sequence_without_candidates():
     f = Fragmentor(random_seq(1000), **SEG)
-    f.add_condition(ConstCondition(fill=1.0, max_val=0.5))
+    f.add_condition(const(fill=1.0, max_val=0.5))
     with pytest.raises(GapError) as info:
         f.chop()
     assert info.value.gaps == [(0, 1000)]
@@ -494,7 +492,7 @@ def test_gap_lengths_without_candidates():
 
 def test_chop_short_sequence_needs_no_candidates():
     f = Fragmentor(random_seq(150), **SEG)
-    f.add_condition(ConstCondition(fill=1.0, max_val=0.5))
+    f.add_condition(const(fill=1.0, max_val=0.5))
     assert f.chop().segments == [(0, 150)]
 
 
