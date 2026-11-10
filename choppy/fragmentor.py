@@ -27,12 +27,19 @@ class Candidates:
     Always sorted by start, then end, with no two entries sharing (start, end). The arrays
     are read-only so the order and the alignment of the fields cannot be broken from
     outside; every change goes through add, which re-sorts all fields together.
+
+    The first and last entries are always the zero-length sentinels (0, 0) and
+    (seq_len, seq_len) marking the sequence edges, so the stretches before the first real
+    overlap and after the last one are ordinary gaps, and there is at least one gap even
+    without any real overlaps. add cannot create or replace them: real overlaps need
+    0 <= start < end <= seq_len.
     """
 
-    def __init__(self, starts=(), ends=(), extra_penalty=0.0):
-        self.starts = self._freeze(np.empty(0, dtype=np.int64))
-        self.ends = self._freeze(np.empty(0, dtype=np.int64))
-        self.extra_penalty = self._freeze(np.empty(0, dtype=np.float64))
+    def __init__(self, seq_len: int, starts=(), ends=(), extra_penalty=0.0):
+        self.seq_len = seq_len
+        self.starts = self._freeze(np.array([0, seq_len], dtype=np.int64))
+        self.ends = self._freeze(np.array([0, seq_len], dtype=np.int64))
+        self.extra_penalty = self._freeze(np.zeros(2, dtype=np.float64))
         self.add(starts, ends, extra_penalty)
 
     @staticmethod
@@ -55,8 +62,8 @@ class Candidates:
                 f"starts and ends must be 1-D and of equal length, got shapes "
                 f"{new_starts.shape} and {new_ends.shape}"
             )
-        if np.any(new_starts < 0) or np.any(new_ends <= new_starts):
-            raise ValueError("Every candidate needs 0 <= start < end")
+        if np.any(new_starts < 0) or np.any(new_ends <= new_starts) or np.any(new_ends > self.seq_len):
+            raise ValueError(f"Every candidate needs 0 <= start < end <= seq_len ({self.seq_len})")
         try:
             new_penalty = np.broadcast_to(np.asarray(extra_penalty, dtype=np.float64),
                                           new_starts.shape)
@@ -87,14 +94,20 @@ class Candidates:
         self.extra_penalty = self._freeze(penalty[keep])
 
     def __len__(self) -> int:
+        """The number of entries, the two sentinels included."""
         return len(self.starts)
 
+    @property
+    def n_overlaps(self) -> int:
+        """The number of real overlaps, without the sentinels."""
+        return len(self) - 2
+
     def __iter__(self):
-        """(start, end) pairs as plain ints, in order."""
+        """(start, end) pairs as plain ints, in order, the sentinels included."""
         return zip(self.starts.tolist(), self.ends.tolist())
 
     def __repr__(self) -> str:
-        return f"Candidates({len(self)} overlaps)"
+        return f"Candidates({self.n_overlaps} overlaps)"
 
 
 @dataclass
@@ -162,12 +175,13 @@ class Overlaps:
         return mask
 
     def generate_candidates(self, min_edge_len: int) -> Candidates:
-        """Potential overlaps, sorted by start then end, with no extra penalty."""
+        """Potential overlaps, sorted by start then end, with no extra penalty, between the
+        two edge sentinels."""
         mask = self.feasible_mask() & self.grid.edge_mask(min_edge_len)
         mask = self._thin(mask)
 
         starts, ends = self.grid.overlap(*np.nonzero(mask))
-        self.candidates = Candidates(starts, ends)
+        self.candidates = Candidates(len(self.seq), starts, ends)
 
         return self.candidates
 
@@ -176,25 +190,37 @@ class Overlaps:
             raise ValueError("No candidates have been generated yet")
         return self.candidates
 
-    def gap_lengths(self) -> np.ndarray:
-        """The lengths of the potential consecutive edges."""
+    def _gaps(self) -> tuple[np.ndarray, np.ndarray]:
+        """The shortest segment across each split between consecutive candidates, as
+        (opens, closes) arrays, one entry per split.
+
+        A chain of overlaps runs forward through the candidates, so it crosses the split
+        after candidate i with a segment opening on some candidate at or before i and
+        closing on one after it. Starts are sorted, so the latest opening is start_i; ends
+        are not, so the earliest closing is the minimum over all later ends, not end_{i+1}.
+        The sentinels make the first and last splits run from and to the sequence edges.
+        """
         c = self._require_candidates()
-        return c.ends[1:] - c.starts[:-1]
+        closes = np.minimum.accumulate(c.ends[::-1])[::-1][1:]
+        return c.starts[:-1], closes
+
+    def gap_lengths(self) -> np.ndarray:
+        """The length of the shortest segment across each split between candidates."""
+        opens, closes = self._gaps()
+        return closes - opens
 
     def plot_gap_lengths(self, min_gap_len: int = None, ax=None):
-        """Histogram of the lengths of the gaps between consecutive overlaps."""
-        if len(self._require_candidates()) < 2:
-            raise ValueError("Fewer than two candidates: there are no gaps to plot")
+        """Histogram of the shortest segment lengths across the splits between candidates."""
         lengths = self.gap_lengths()
         if min_gap_len is not None:
             lengths = lengths[lengths >= min_gap_len]
         if ax is None:
             import matplotlib.pyplot as plt
             fig, ax = plt.subplots()
-        ax.hist(lengths, bins=range(1, lengths.max() + 2), align="left", color="tab:blue")
+        ax.hist(lengths, bins=range(1, lengths.max(initial=0) + 2), align="left", color="tab:blue")
         ax.set_xlabel("gap length")
         ax.set_ylabel("count")
-        ax.set_title(f"gaps between {len(self.candidates)} candidate overlaps")
+        ax.set_title(f"gaps between {self.candidates.n_overlaps} candidate overlaps")
         return ax
 
     def plot_rows(self, indices: int | list[int] | None = None, a: int = 0, b: int = None):
@@ -227,20 +253,19 @@ class Overlaps:
         return axes
 
     def get_gapped_regions(self, min_gap_len: int) -> list[tuple[int, int]]:
-        """The regions of the sequence that are not covered by any candidate overlap.
-
-        Returns a list of (start, end) tuples, sorted by start. Each region is at least
+        """The shortest segments across the splits between candidates that are at least
         min_gap_len long.
+
+        Each region runs from the start of the overlap opening the segment to the end of
+        the one closing it, both overlaps included, so its length compares directly with
+        the segment lengths. Returns a list of (start, end) tuples, sorted by start; the
+        regions of neighbouring splits may overlap.
         """
-        gaps = []
-        prev_end = 0
-        for start, end in self._require_candidates():
-            if start - prev_end >= min_gap_len:
-                gaps.append((prev_end, start))
-            prev_end = max(prev_end, end)
-        if len(self.seq) - prev_end >= min_gap_len:
-            gaps.append((prev_end, len(self.seq)))
-        return gaps
+        opens, closes = self._gaps()
+        keep = closes - opens >= min_gap_len
+        return list(zip(opens[keep].tolist(), closes[keep].tolist()))
+
+
 @dataclass
 class Assembly:
     """One cut of the sequence: the chosen overlaps and the segments between them."""
@@ -401,15 +426,14 @@ class Fragmentor:
             return self.segment_overlaps.plot_rows(indices, a, b)
 
     def gap_check(self, fragment: bool = False, min_gap_len: int = None) -> None:
-        """Raise GapError if some stretch without candidate overlaps is too long to bridge.
+        """Raise GapError if some stretch between candidate overlaps is too long to bridge.
 
-        A gap is a region [a, b) that no candidate overlap touches. A segment across an
-        interior gap opens on an overlap ending at or before a and closes on one starting
-        at or after b, so it is at least (b - a) + 2 * min_len long; at either end of the
-        sequence one side is the sequence edge instead, which saves one min_len. A gap
-        whose shortest crossing segment is still longer than max_len rules out every
-        assembly, whatever the rest of the chain looks like. (Fragments alike, with the
-        fragment lengths.)
+        A gap is the shortest segment that can cross a split between consecutive
+        candidates: from the start of the overlap opening it to the end of the one closing
+        it (see Overlaps.get_gapped_regions), with the sequence edges as zero-length
+        overlaps. Every assembly crosses every split, so a gap longer than max_len rules
+        out every assembly, whatever the rest of the chain looks like. (Fragments alike,
+        with the fragment lengths.)
 
         Passing min_gap_len replaces that rule: every gap at least min_gap_len long is
         reported.
@@ -421,33 +445,23 @@ class Fragmentor:
             overlaps, max_len = self.fragment_overlaps, self.max_fragment_len
         else:
             overlaps, max_len = self.segment_overlaps, self.max_segment_len
-        min_ov = overlaps.min_len
 
-        # interior gaps need the least to be unbridgeable; edge gaps are filtered below
-        threshold = max_len - 2 * min_ov + 1 if min_gap_len is None else min_gap_len
-        # with no candidates at all this is the whole sequence
-        regions = overlaps.get_gapped_regions(threshold)
+        threshold = max_len + 1 if min_gap_len is None else min_gap_len
+        gaps = overlaps.get_gapped_regions(threshold)
 
-        if min_gap_len is None:
-            gaps = []
-            for a, b in regions:
-                sides = (a > 0) + (b < self.seq_len)  # sides that must close on an overlap
-                if (b - a) + sides * min_ov > max_len:
-                    gaps.append((a, b))
-        else:
-            gaps = regions
         if not gaps:
             return
 
         if min_gap_len is None:
-            why = (f"over a stretch too long for any {name} of at most {max_len} bp to "
-                   f"bridge, so no assembly exists")
+            why = (f"longer than any {name} of at most {max_len} bp, so no assembly "
+                   f"exists")
         else:
-            why = f"over a stretch of at least {min_gap_len} bp"
+            why = f"at least {min_gap_len} bp long"
         lines = "\n".join(f"  [{a}, {b}): {b - a} bp" for a, b in gaps)
         raise GapError(
-            f"{len(gaps)} region(s) of the sequence have no candidate {name} overlaps "
-            f"{why}:\n{lines}\n"
+            f"{len(gaps)} region(s) of the sequence can only be crossed by a {name} "
+            f"{why} (each region runs from the start of the candidate overlap before it "
+            f"to the end of the one after it, or from/to the sequence edge):\n{lines}\n"
             f"To get past them, for each region either add candidate overlaps manually, "
             f"relax the existing constraints, or add relaxed local rules for the affected "
             f"region.",
@@ -465,7 +479,8 @@ class Fragmentor:
                 self.generate_candidates(fragment=True)
             self.gap_check(fragment=True)
 
-        starts, ends = self._with_sentinels(self.segment_overlaps)
+        c = self.segment_overlaps.candidates
+        starts, ends = c.starts, c.ends
 
         weights, back = self._shortest_path(starts, ends, self.min_segment_len, self.max_segment_len)
         if not np.isfinite(weights[-1]):
@@ -476,13 +491,6 @@ class Fragmentor:
             segments=[(int(starts[i]), int(ends[j])) for i, j in zip(path, path[1:])],
             overlaps=[(int(starts[i]), int(ends[i])) for i in path[1:-1]],
         )
-
-    def _with_sentinels(self, overlaps: Overlaps) -> tuple[np.ndarray, np.ndarray]:
-        """Candidates bracketed by zero-length overlaps at each end of the sequence."""
-        c = overlaps._require_candidates()
-        starts = np.concatenate(([0], c.starts, [self.seq_len]))
-        ends = np.concatenate(([0], c.ends, [self.seq_len]))
-        return starts, ends
 
     @staticmethod
     def _shortest_path(starts: np.ndarray, ends: np.ndarray,

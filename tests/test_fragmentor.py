@@ -181,19 +181,22 @@ def test_generate_candidates_respects_constraints_and_edges():
     assert cands is ov.candidates
     assert list(cands) == sorted(cands)
     assert np.all(cands.extra_penalty == 0)
-    assert cands, "expected some candidates with a single-base motif"
-    for s, e in cands:
+    pairs = list(cands)
+    assert pairs[0] == (0, 0) and pairs[-1] == (len(seq), len(seq))
+    assert cands.n_overlaps > 0, "expected some candidates with a single-base motif"
+    for s, e in pairs[1:-1]:
         assert 10 <= e - s <= 15
         assert e >= 40 and len(seq) - s >= 40
         assert seq[s] in "GC" and seq[e - 1] in "GC"
     expected = ov.feasible_mask() & ov.grid.edge_mask(40)
-    assert len(cands) == expected.sum()
+    assert cands.n_overlaps == expected.sum()
 
 
 def test_generate_candidates_empty():
     ov = Overlaps("A" * 100, 10, 15)
     ov.add_condition(BoundaryMotif(motif="GC", max_val=0))
-    assert len(ov.generate_candidates(min_edge_len=31)) == 0
+    cands = ov.generate_candidates(min_edge_len=31)
+    assert cands.n_overlaps == 0 and list(cands) == [(0, 0), (100, 100)]
 
 
 def test_generate_candidates_thinned():
@@ -425,13 +428,14 @@ class BlockRegion(AbstractCondition):
 
 @pytest.mark.parametrize("a", [300, 500])
 def test_chop_reports_unbridgeable_gap(a):
-    # SEG: a segment across an interior gap is >= gap + 2 * 20 bp, so 161 bp beats 200
+    # SEG: the shortest crossing opens on a 20 bp overlap ending at a and closes on a
+    # 20 bp one starting at a + 161, so it is 161 + 2 * 20 = 201 bp, one over 200
     f = Fragmentor(random_seq(1000), **SEG)
     f.add_condition(BlockRegion(a, a + 161))
     with pytest.raises(GapError, match="add candidate overlaps manually") as info:
         f.chop()
-    assert info.value.gaps == [(a, a + 161)]
-    assert f"[{a}, {a + 161}): 161 bp" in str(info.value)
+    assert info.value.gaps == [(a - 20, a + 181)]
+    assert f"[{a - 20}, {a + 181}): 201 bp" in str(info.value)
     assert isinstance(info.value, NoAssemblyError)
 
 
@@ -450,6 +454,44 @@ def test_chop_reports_whole_sequence_without_candidates():
     assert info.value.gaps == [(0, 1000)]
 
 
+def test_gap_lengths_include_the_edges():
+    ov = Overlaps("A" * 100, 5, 8)
+    ov.candidates = Candidates(100, [30], [36])
+    assert ov.gap_lengths().tolist() == [36, 70]
+    assert ov.get_gapped_regions(1) == [(0, 36), (30, 100)]
+    assert ov.get_gapped_regions(50) == [(30, 100)]
+
+
+def test_gap_lengths_with_unsorted_ends():
+    # B starts before C but ends after it, so the split between A and B is crossed
+    # most cheaply by A -> C (75 bp), not A -> B (90 bp)
+    ov = Overlaps("A" * 1000, 15, 40)
+    ov.candidates = Candidates(1000, [100, 150, 155], [130, 190, 175])
+    assert ov.gap_lengths().tolist() == [130, 75, 25, 845]
+    assert ov.get_gapped_regions(76) == [(0, 130), (155, 1000)]
+
+
+def test_gap_check_allows_a_gap_of_exactly_max_len():
+    # every crossing is exactly max_segment_len (200), which a segment may be
+    f = Fragmentor("A" * 1000, **SEG)
+    f.segment_overlaps.candidates = Candidates(1000, [80, 260, 440, 620, 800],
+                                               [100, 280, 460, 640, 820])
+    f.gap_check()
+    f.segment_overlaps.candidates = Candidates(1000, [80, 260, 441, 620, 800],
+                                               [100, 280, 461, 640, 820])
+    with pytest.raises(GapError) as info:
+        f.gap_check()
+    assert info.value.gaps == [(260, 461)]
+
+
+def test_gap_lengths_without_candidates():
+    ov = Overlaps("A" * 100, 5, 8)
+    ov.candidates = Candidates(100)
+    assert ov.gap_lengths().tolist() == [100]
+    assert ov.get_gapped_regions(1) == [(0, 100)]
+    assert ov.get_gapped_regions(101) == []
+
+
 def test_chop_short_sequence_needs_no_candidates():
     f = Fragmentor(random_seq(150), **SEG)
     f.add_condition(ConstCondition(fill=1.0, max_val=0.5))
@@ -460,53 +502,55 @@ def test_chop_short_sequence_needs_no_candidates():
 
 
 def test_candidates_sorted_by_start_then_end():
-    c = Candidates([5, 1, 5, 3], [9, 4, 7, 8], [0.5, 0.1, 0.2, 0.3])
-    assert list(c) == [(1, 4), (3, 8), (5, 7), (5, 9)]
-    assert c.extra_penalty.tolist() == [0.1, 0.3, 0.2, 0.5]  # moved with their overlaps
+    c = Candidates(100, [5, 1, 5, 3], [9, 4, 7, 8], [0.5, 0.1, 0.2, 0.3])
+    assert list(c) == [(0, 0), (1, 4), (3, 8), (5, 7), (5, 9), (100, 100)]
+    # moved with their overlaps
+    assert c.extra_penalty.tolist() == [0.0, 0.1, 0.3, 0.2, 0.5, 0.0]
 
 
 def test_candidates_default_and_scalar_penalty():
-    assert Candidates([1, 2], [5, 6]).extra_penalty.tolist() == [0.0, 0.0]
-    assert Candidates([1, 2], [5, 6], 2.0).extra_penalty.tolist() == [2.0, 2.0]
+    assert Candidates(100, [1, 2], [5, 6]).extra_penalty.tolist() == [0.0] * 4
+    assert Candidates(100, [1, 2], [5, 6], 2.0).extra_penalty.tolist() == [0.0, 2.0, 2.0, 0.0]
 
 
 def test_candidates_empty():
-    c = Candidates()
-    assert len(c) == 0 and not c and list(c) == []
+    c = Candidates(100)
+    assert c.n_overlaps == 0 and list(c) == [(0, 0), (100, 100)]
 
 
 def test_candidates_add_keeps_order():
-    c = Candidates([10, 30], [20, 40])
+    c = Candidates(100, [10, 30], [20, 40])
     c.add(25, 35, extra_penalty=1.0)
-    c.add([5, 10], [15, 18])
-    assert list(c) == [(5, 15), (10, 18), (10, 20), (25, 35), (30, 40)]
-    assert c.extra_penalty.tolist() == [0.0, 0.0, 0.0, 1.0, 0.0]
+    c.add([0, 10, 90], [15, 18, 100])
+    assert list(c) == [(0, 0), (0, 15), (10, 18), (10, 20), (25, 35), (30, 40), (90, 100),
+                       (100, 100)]
+    assert c.extra_penalty.tolist() == [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
 
 
 def test_candidates_add_skips_duplicates_by_default():
-    c = Candidates([10], [20], 1.0)
+    c = Candidates(100, [10], [20], 1.0)
     c.add([10, 12], [20, 22], 5.0)
-    assert list(c) == [(10, 20), (12, 22)]
-    assert c.extra_penalty.tolist() == [1.0, 5.0]
+    assert list(c)[1:-1] == [(10, 20), (12, 22)]
+    assert c.extra_penalty.tolist()[1:-1] == [1.0, 5.0]
 
 
 def test_candidates_add_updates_duplicates():
-    c = Candidates([10], [20], 1.0)
+    c = Candidates(100, [10], [20], 1.0)
     c.add([10, 12], [20, 22], 5.0, skip_duplicates=False)
-    assert list(c) == [(10, 20), (12, 22)]
-    assert c.extra_penalty.tolist() == [5.0, 5.0]
+    assert list(c)[1:-1] == [(10, 20), (12, 22)]
+    assert c.extra_penalty.tolist()[1:-1] == [5.0, 5.0]
 
 
 @pytest.mark.parametrize("skip,expected", [(True, 1.0), (False, 3.0)])
 def test_candidates_duplicates_within_a_batch(skip, expected):
-    c = Candidates()
+    c = Candidates(100)
     c.add([7, 7, 7], [9, 9, 9], [1.0, 2.0, 3.0], skip_duplicates=skip)
-    assert list(c) == [(7, 9)]
-    assert c.extra_penalty.tolist() == [expected]
+    assert list(c)[1:-1] == [(7, 9)]
+    assert c.extra_penalty.tolist()[1:-1] == [expected]
 
 
 def test_candidates_arrays_are_read_only():
-    c = Candidates([1], [5])
+    c = Candidates(100, [1], [5])
     for arr in (c.starts, c.ends, c.extra_penalty):
         with pytest.raises(ValueError):
             arr[0] = 0
@@ -518,12 +562,14 @@ def test_candidates_arrays_are_read_only():
         (([1, 2], [5]), "equal length"),
         (([5], [5]), "start < end"),
         (([-1], [5]), "start < end"),
+        (([90], [101]), "end <= seq_len"),
+        (([0], [0]), "start < end"),  # sentinels cannot be added
         (([1, 2], [5, 6], [1.0, 2.0, 3.0]), "extra_penalty"),
     ],
 )
 def test_candidates_rejects_bad_input(args, match):
     with pytest.raises(ValueError, match=match):
-        Candidates(*args)
+        Candidates(100, *args)
 
 
 def test_chop_keeps_existing_candidates():
