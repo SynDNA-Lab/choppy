@@ -198,6 +198,17 @@ class AbstractScorer(ABC):
         the multiplier that turns them back into the scorer's own units."""
 
 
+THRESHOLDS = ("min_val", "max_val", "opt_val")
+_UNSET = object()  # "not given" for Condition.update, where None means "remove"
+
+
+def _same(a, b) -> bool:
+    """Whether two threshold values are the same, None included."""
+    if a is None or b is None:
+        return a is b
+    return a == b
+
+
 @dataclass(eq=False)
 class Condition:
     """A scorer with thresholds: a constraint (min_val and/or max_val), an objective
@@ -206,6 +217,13 @@ class Condition:
     It compares by identity, unlike its scorer: two conditions on the same scorer are
     still separate conditions. The map is attached by the owning Overlaps. name is
     optional; when set it must be unique on the level, which can then look it up by it.
+
+    The thresholds can be changed after the condition is added, with update or by
+    plain assignment (`c.max_val = 3`). Every change that alters a value bumps version,
+    which is how the owning level notices that its candidates are out of date. A change
+    that would leave no threshold at all is refused and leaves the condition as it was.
+    The scorer cannot be swapped once the condition is bound: its map would no longer
+    match it.
     """
     scorer: AbstractScorer
     min_val: np.float16 | None = None
@@ -213,11 +231,47 @@ class Condition:
     opt_val: np.float16 | None = None
     name: str | None = None
     map: OverlapMap | None = field(default=None, init=False, repr=False)
+    version: int = field(default=0, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        if self.min_val is None and self.max_val is None and self.opt_val is None:
+        self._check_thresholds(self.min_val, self.max_val, self.opt_val)
+        # __init__ leaves an init=False field with a plain default to the class attribute,
+        # so version only reaches the instance here: its presence in __dict__ marks the
+        # end of construction, after which threshold assignments go through update
+        object.__setattr__(self, "version", 0)
+
+    @staticmethod
+    def _check_thresholds(min_val, max_val, opt_val) -> None:
+        if min_val is None and max_val is None and opt_val is None:
             raise ValueError("Condition has no thresholds or objectives set: it is neither a constraint "
                              "nor an objective")
+
+    def __setattr__(self, name: str, value) -> None:
+        if "version" not in self.__dict__:  # still inside __init__
+            super().__setattr__(name, value)
+        elif name in THRESHOLDS:
+            self.update(**{name: value})
+        elif name == "scorer" and self.map is not None:
+            raise AttributeError("The scorer of a bound condition cannot be changed: add a new Condition")
+        else:
+            super().__setattr__(name, value)
+
+    def update(self, min_val=_UNSET, max_val=_UNSET, opt_val=_UNSET) -> None:
+        """Change any of the thresholds at once; None removes one, an omitted one is kept.
+
+        The new set is checked as a whole before anything is changed, so a condition can
+        be turned from a constraint into an objective in one call. version is bumped once,
+        and only if some value actually changed.
+        """
+        given = {"min_val": min_val, "max_val": max_val, "opt_val": opt_val}
+        new = {k: (getattr(self, k) if v is _UNSET else v) for k, v in given.items()}
+        self._check_thresholds(**new)
+        changed = {k: v for k, v in new.items() if not _same(v, getattr(self, k))}
+        if not changed:
+            return
+        for k, v in changed.items():
+            object.__setattr__(self, k, v)
+        object.__setattr__(self, "version", self.version + 1)
 
     @property
     def grid(self) -> OverlapGrid | None:

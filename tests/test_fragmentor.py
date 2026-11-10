@@ -744,3 +744,118 @@ def test_fragmentor_plot_rows_by_name(plt):
     f.add_condition(motif("GC", max_val=0, name="gc"), fragment=True)
     axes = f.plot_rows(fragment=True, indices="gc", a=0, b=50)
     assert [ax.get_title() for ax in axes] == ["gc"]
+
+
+# --------------------------------------------------------------------------- updates and staleness
+
+
+def test_candidates_stale_tracks_the_conditions():
+    ov = Overlaps(random_seq(200, seed=3), 10, 15)
+    c = motif("[GC]", max_val=0)
+    ov.add_condition(c)
+    assert ov.candidates_stale                 # none yet
+    ov.generate_candidates(40)
+    assert not ov.candidates_stale
+    c.max_val = 0                              # no change
+    assert not ov.candidates_stale
+    c.max_val = 1
+    assert ov.candidates_stale
+    ov.generate_candidates(40)
+    assert not ov.candidates_stale
+    ov.add_condition(motif("AT", opt_val=0))   # a new condition, even an objective
+    assert ov.candidates_stale
+
+
+def test_directly_assigned_candidates_are_never_stale():
+    ov = Overlaps("A" * 100, 5, 8)
+    c = motif("A", max_val=0)
+    ov.add_condition(c)
+    ov.generate_candidates(20)
+    ov.candidates = Candidates(100, [30], [36])
+    c.max_val = 1
+    assert not ov.candidates_stale
+
+
+def test_update_changes_the_feasible_candidates():
+    ov = Overlaps(random_seq(200, seed=3), 10, 15)
+    c = motif("[GC]", max_val=0)
+    ov.add_condition(c)
+    strict = set(ov.generate_candidates(40))
+    c.max_val = 1  # every overlap passes
+    loose = set(ov.generate_candidates(40))
+    assert strict < loose
+    assert len(loose) - 2 == ov.grid.edge_mask(40).sum()
+
+
+def test_update_moves_a_condition_between_constraints_and_objectives():
+    ov = Overlaps("A" * 30, 4, 7)
+    c = motif("A", max_val=0)
+    ov.add_condition(c)
+    c.update(max_val=None, opt_val=0)
+    assert ov.constraints == [] and ov.objectives == [c]
+
+
+def test_chop_regenerates_after_an_update():
+    f = Fragmentor(random_seq(1000), **SEG)
+    c = block(500, 661)
+    f.add_condition(c)
+    with pytest.raises(GapError):
+        f.chop()
+    c.max_val = 1.0  # the blocked overlaps score 1, so now they pass
+    asm = f.chop()
+    assert asm.segments[0][0] == 0 and asm.segments[-1][1] == 1000
+
+
+def test_gap_check_generates_missing_candidates():
+    f = Fragmentor(random_seq(1000), **SEG)
+    f.add_condition(block(500, 661))
+    assert f.segment_overlaps.candidates is None
+    with pytest.raises(GapError):
+        f.gap_check()
+    assert f.segment_overlaps.candidates is not None
+
+
+# overlaps 20 bp long, every 170 bp: segments of 190 bp, the last one 150
+MANUAL_STARTS = [170, 340, 510, 680, 850]
+MANUAL_ENDS = [190, 360, 530, 700, 870]
+
+
+def test_hand_added_candidates_before_generation_are_used():
+    f = Fragmentor(random_seq(1000), **SEG)
+    f.add_condition(const(fill=1.0, max_val=0.5))  # rejects every overlap
+    f.add_candidates(MANUAL_STARTS, MANUAL_ENDS)
+    asm = f.chop()
+    assert asm.overlaps == list(zip(MANUAL_STARTS, MANUAL_ENDS))
+
+
+def test_hand_added_candidates_survive_regeneration():
+    f = Fragmentor(random_seq(1000), **SEG)
+    c = const(fill=1.0, max_val=0.5)
+    f.add_condition(c)
+    f.generate_candidates()
+    f.add_candidates(MANUAL_STARTS, MANUAL_ENDS, extra_penalty=0.25)
+    c.max_val = 0.75  # still rejects everything, but the candidates are now stale
+    asm = f.chop()
+    assert asm.overlaps == list(zip(MANUAL_STARTS, MANUAL_ENDS))
+    cands = f.segment_overlaps.candidates
+    assert cands.n_overlaps == 5 and np.all(cands.extra_penalty[1:-1] == 0.25)
+
+
+def test_hand_added_candidate_replaces_a_generated_one():
+    ov = Overlaps(random_seq(200, seed=3), 10, 15)
+    ov.add_condition(motif("[GC]", max_val=0))
+    s, e = list(ov.generate_candidates(40))[1]
+    n = ov.candidates.n_overlaps
+    ov.add_candidates(s, e, extra_penalty=0.5)
+    assert ov.candidates.n_overlaps == n and ov.candidates.extra_penalty[1] == 0.5
+    ov.generate_candidates(40)
+    assert ov.candidates.n_overlaps == n and ov.candidates.extra_penalty[1] == 0.5
+
+
+def test_a_later_hand_added_candidate_replaces_an_earlier_one():
+    ov = Overlaps("A" * 100, 5, 8)
+    ov.add_condition(const(fill=1.0, max_val=0.5))  # rejects every overlap
+    ov.add_candidates(30, 36, extra_penalty=0.1)
+    ov.add_candidates(30, 36, extra_penalty=0.9)
+    assert ov.manual.extra_penalty.tolist() == [0.0, 0.9, 0.0]
+    assert ov.generate_candidates(20).extra_penalty.tolist() == [0.0, 0.9, 0.0]

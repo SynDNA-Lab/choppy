@@ -268,6 +268,59 @@ def test_condition_rejects_no_threshold():
         Condition(ConstScorer())
 
 
+def test_threshold_changes_bump_the_version_once_per_change():
+    c = Condition(BoundaryMotif(), max_val=1)
+    assert c.version == 0
+    c.max_val = 2
+    assert c.version == 1 and c.max_val == 2
+    c.max_val = 2                      # same value: nothing changed
+    c.update(max_val=2, opt_val=None)  # likewise
+    assert c.version == 1
+    c.update(min_val=0.5, max_val=3)   # two values, one change
+    assert c.version == 2 and (c.min_val, c.max_val) == (0.5, 3)
+
+
+def test_update_keeps_omitted_thresholds_and_none_removes_one():
+    c = Condition(BoundaryMotif(), min_val=0.1, max_val=1)
+    c.update(max_val=None)
+    assert (c.min_val, c.max_val, c.opt_val) == (0.1, None, None)
+
+
+def test_update_checks_the_new_thresholds_as_a_whole():
+    """A constraint can become an objective in one call, though removing its last
+    threshold first would leave none."""
+    c = Condition(BoundaryMotif(), max_val=1)
+    c.update(max_val=None, opt_val=0.0)
+    assert not c.is_constraint and c.is_objective
+    assert c.version == 1
+
+
+@pytest.mark.parametrize("change", [
+    lambda c: c.update(max_val=None),
+    lambda c: setattr(c, "max_val", None),
+])
+def test_removing_the_last_threshold_is_refused_and_changes_nothing(change):
+    c = Condition(BoundaryMotif(), max_val=1)
+    with pytest.raises(ValueError, match="neither a constraint nor an objective"):
+        change(c)
+    assert c.max_val == 1 and c.version == 0
+
+
+def test_name_changes_do_not_bump_the_version():
+    c = Condition(BoundaryMotif(), max_val=1)
+    c.name = "gc"
+    assert c.version == 0 and c.label == "gc"
+
+
+def test_scorer_is_fixed_once_bound(grid):
+    c = Condition(BoundaryMotif("GC"), max_val=0)
+    c.scorer = BoundaryMotif("CG")  # unbound: still free to change
+    c.bind(c.scorer.build_map("A" * grid.seq_len, grid))
+    with pytest.raises(AttributeError, match="cannot be changed"):
+        c.scorer = BoundaryMotif("GC")
+    assert c.scorer == BoundaryMotif("CG")
+
+
 def test_conditions_compare_by_identity():
     scorer = BoundaryMotif("GC")
     assert Condition(scorer, max_val=0) != Condition(scorer, max_val=0)

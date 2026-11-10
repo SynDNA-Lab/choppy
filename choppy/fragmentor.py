@@ -117,6 +117,10 @@ class Overlaps:
     The condition maps come from maps, a store that may be shared with other levels: its
     grid can be wider than this level's, and each condition reads a view of the shared
     map cut down to this level's grid. Without a store the level gets one of its own.
+
+    Generated candidates remember the conditions they were generated from, so the level
+    can tell when they are out of date (see candidates_stale). Overlaps added by hand are
+    kept apart in manual and merged back into every new generation.
     """
     seq: str
     min_len: int # miminal overlap length
@@ -128,9 +132,13 @@ class Overlaps:
     maps: MapStore | None = field(default=None, repr=False)
 
     grid: OverlapGrid = field(init=False, repr=False)
+    manual: Candidates = field(init=False, repr=False)  # the overlaps added by hand
+    # the last generated candidates, with the (condition, version) pairs they came from
+    _generated: tuple[Candidates, tuple] | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.grid = OverlapGrid(len(self.seq), self.min_len, self.max_len)
+        self.manual = Candidates(len(self.seq))
         if self.maps is None:
             self.maps = MapStore(self.seq, self.grid)
         else:
@@ -215,15 +223,50 @@ class Overlaps:
         return mask
 
     def generate_candidates(self, min_edge_len: int) -> Candidates:
-        """Potential overlaps, sorted by start then end, with no extra penalty, between the
-        two edge sentinels."""
+        """Potential overlaps, sorted by start then end, between the two edge sentinels:
+        the feasible ones, with no extra penalty, and every overlap added by hand, with
+        its own (it replaces a generated one at the same start and end)."""
         mask = self.feasible_mask() & self.grid.edge_mask(min_edge_len)
         mask = self._thin(mask)
 
         starts, ends = self.grid.overlap(*np.nonzero(mask))
-        self.candidates = Candidates(len(self.seq), starts, ends)
+        candidates = Candidates(len(self.seq), starts, ends)
+        m = self.manual
+        candidates.add(m.starts[1:-1], m.ends[1:-1], m.extra_penalty[1:-1], skip_duplicates=False)
 
-        return self.candidates
+        self.candidates = candidates
+        self._generated = (candidates, self._conditions_state())
+        return candidates
+
+    def _conditions_state(self) -> tuple:
+        """What the candidates depend on: each condition and the version of its thresholds."""
+        return tuple((c, c.version) for c in self.conditions)
+
+    @property
+    def candidates_stale(self) -> bool:
+        """Whether the candidates have to be (re)generated before use.
+
+        True when there are none yet, or when they were generated and the conditions have
+        changed since: a condition added, or the thresholds of one updated. Candidates
+        assigned directly rather than generated are taken as given and never stale.
+        """
+        if self.candidates is None:
+            return True
+        if self._generated is None or self._generated[0] is not self.candidates:
+            return False
+        return self._generated[1] != self._conditions_state()
+
+    def add_candidates(self, starts, ends, extra_penalty=0.0) -> None:
+        """Add overlaps by hand, e.g. to bridge a gap the constraints leave.
+
+        They are kept in manual and survive every regeneration of the candidates, and are
+        added to the current candidates too, if there are any. A hand-added overlap
+        replaces whatever is at the same start and end, an earlier hand-added one
+        included, so its extra_penalty is the one that applies.
+        """
+        self.manual.add(starts, ends, extra_penalty, skip_duplicates=False)
+        if self.candidates is not None:
+            self.candidates.add(starts, ends, extra_penalty, skip_duplicates=False)
 
     def _require_candidates(self) -> Candidates:
         if self.candidates is None:
@@ -482,21 +525,27 @@ class Fragmentor:
     def get_condition(self, name: str, fragment: bool = False) -> Condition:
         return self._level(fragment).get_condition(name)
 
-    def generate_candidates(self, fragment: bool = False) -> Candidates:
+    def _lengths(self, fragment: bool) -> tuple[int, int]:
+        """min_len and max_len of the fragments or the segments."""
+        self._level(fragment)  # raises if there is no fragment level
         if fragment:
-            if self.fragment_overlaps is None:
-                raise ValueError("Fragment lengths were not set, so there is no fragment level")
-            return self.fragment_overlaps.generate_candidates(self.min_fragment_len)
-        else:
-            return self.segment_overlaps.generate_candidates(self.min_segment_len)
+            return self.min_fragment_len, self.max_fragment_len
+        return self.min_segment_len, self.max_segment_len
+
+    def generate_candidates(self, fragment: bool = False) -> Candidates:
+        """Generate the level's candidates afresh, whether or not they are stale."""
+        return self._level(fragment).generate_candidates(self._lengths(fragment)[0])
+
+    def _current_candidates(self, fragment: bool) -> Candidates:
+        """The level's candidates, regenerated first if they are stale."""
+        level = self._level(fragment)
+        if level.candidates_stale:
+            self.generate_candidates(fragment)
+        return level.candidates
 
     def plot_gap_lengths(self, fragment: bool = False, min_gap_len: int = None, ax=None):
-        if fragment:
-            if self.fragment_overlaps is None:
-                raise ValueError("Fragment lengths were not set, so there is no fragment level")
-            return self.fragment_overlaps.plot_gap_lengths(min_gap_len, ax)
-        else:
-            return self.segment_overlaps.plot_gap_lengths(min_gap_len, ax)
+        self._current_candidates(fragment)
+        return self._level(fragment).plot_gap_lengths(min_gap_len, ax)
 
     def plot_rows(self, fragment: bool = False, indices: int | str | list[int | str] | None = None,
                   a: int = 0, b: int = None):
@@ -514,14 +563,12 @@ class Fragmentor:
 
         Passing min_gap_len replaces that rule: every gap at least min_gap_len long is
         reported.
+
+        Stale candidates (none yet, or conditions changed since) are regenerated first.
         """
         name = "fragment" if fragment else "segment"
-        if fragment:
-            if self.fragment_overlaps is None:
-                raise ValueError("Fragment lengths were not set, so there is no fragment level")
-            overlaps, max_len = self.fragment_overlaps, self.max_fragment_len
-        else:
-            overlaps, max_len = self.segment_overlaps, self.max_segment_len
+        overlaps, max_len = self._level(fragment), self._lengths(fragment)[1]
+        self._current_candidates(fragment)
 
         threshold = max_len + 1 if min_gap_len is None else min_gap_len
         gaps = overlaps.get_gapped_regions(threshold)
@@ -546,22 +593,16 @@ class Fragmentor:
         )
 
     def add_candidates(self, starts, ends, extra_penalty=0.0, fragment: bool = False) -> None:
-        if fragment:
-            if self.fragment_overlaps is None:
-                raise ValueError("Fragment lengths were not set, so there is no fragment level")
-            self.fragment_overlaps._require_candidates().add(starts, ends, extra_penalty)
-        else:
-            self.segment_overlaps._require_candidates().add(starts, ends, extra_penalty)
+        """Add overlaps by hand; they survive regeneration (see Overlaps.add_candidates)."""
+        self._level(fragment).add_candidates(starts, ends, extra_penalty)
 
     def chop(self) -> Assembly:
-        """Cut the sequence into the fewest segments whose overlaps all satisfy the constraints."""
+        """Cut the sequence into the fewest segments whose overlaps all satisfy the constraints.
 
-        if self.segment_overlaps.candidates is None:
-            self.generate_candidates(fragment=False)
+        Candidates that are missing or stale are (re)generated first, on both levels.
+        """
         self.gap_check(fragment=False)
         if self.fragment_overlaps is not None:
-            if self.fragment_overlaps.candidates is None:
-                self.generate_candidates(fragment=True)
             self.gap_check(fragment=True)
 
         c = self.segment_overlaps.candidates
