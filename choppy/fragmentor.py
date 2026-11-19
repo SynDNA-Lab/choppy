@@ -165,18 +165,12 @@ class Overlaps:
     def add_condition(self, condition: Condition) -> None:
         """Bind condition to this level's view of its scorer's map and keep it.
 
-        A level holds at most one condition per scorer, and its name, if set, must be
-        unique here; both are checked before anything is bound, so a rejected condition is
-        left untouched.
+        Its name, if set, must be unique here; that is checked before anything is bound, so
+        a rejected condition is left untouched. Several conditions may share a scorer (and
+        so its map), e.g. with different thresholds over different areas; all of them apply.
         """
         if condition.name is not None and any(c.name == condition.name for c in self.conditions):
             raise ValueError(f"There is already a condition named {condition.name!r} on this level")
-        for c in self.conditions:
-            if c.scorer == condition.scorer:
-                raise ValueError(
-                    f"There is already a condition on {condition.scorer} on this level "
-                    f"({c.label}): change its thresholds instead of adding another one"
-                )
         condition.bind(self.maps.view(condition.scorer, self.grid))
         self.conditions.append(condition)
 

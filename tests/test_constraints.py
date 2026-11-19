@@ -4,6 +4,7 @@ Tests marked xfail document known bugs (see the reason). xfail is strict, so onc
 is fixed the test starts to "XPASS" and fails the run: remove the marker then.
 """
 import re
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
@@ -377,6 +378,127 @@ def test_feasible_thresholds(kwargs, expected):
     np.testing.assert_array_equal(c.feasible(), np.array(expected, dtype=bool))
 
 
+# --------------------------------------------------------------------------- condition area
+
+
+def in_area(grid, start, end):
+    """Cells inside [start, end); an open end leaves even the past-end cells inside."""
+    inside = grid.starts >= (0 if start is None else start)
+    return inside & (grid.ends <= end) if end is not None else inside & np.ones(grid.shape, bool)
+
+
+@pytest.mark.parametrize("start,end", [(10, 30), (None, 30), (10, None), (0, 50)])
+def test_feasible_admits_everything_outside_the_area(grid, start, end):
+    c = bound(ConstScorer(fill=1.0), "A" * grid.seq_len, grid, max_val=0.5, start=start, end=end)
+    np.testing.assert_array_equal(c.feasible(), ~in_area(grid, start, end))
+
+
+def test_feasible_applies_the_thresholds_inside_the_area(grid):
+    fill = np.random.default_rng(1).random(grid.shape).astype(np.float16)
+    c = bound(ConstScorer(fill=fill), "A" * grid.seq_len, grid, min_val=0.2, max_val=0.7,
+              start=5, end=40)
+    values = c.map.values
+    inside = in_area(grid, 5, 40)
+    np.testing.assert_array_equal(c.feasible()[inside], ((values >= 0.2) & (values <= 0.7))[inside])
+    assert c.feasible()[~inside].all()
+
+
+def test_area_without_bounds_changes_nothing(grid):
+    """No start/end: feasible is exactly the thresholds, past-end cells included."""
+    c = bound(ConstScorer(fill=0.0), "A" * grid.seq_len, grid, max_val=0.5)
+    np.testing.assert_array_equal(c.feasible(), grid.ends <= grid.seq_len)
+
+
+@pytest.mark.parametrize("start,end", [(10, 10), (20, 10)])
+def test_empty_area_is_rejected(start, end):
+    with pytest.raises(ValueError, match="less than end"):
+        Condition(ConstScorer(), max_val=0.5, start=start, end=end)
+
+
+@pytest.mark.parametrize("bad", [1.5, "3", True])
+def test_area_bounds_must_be_ints(bad):
+    with pytest.raises(TypeError, match="must be an int"):
+        Condition(ConstScorer(), max_val=0.5, start=bad)
+
+
+def test_area_accepts_numpy_ints():
+    c = Condition(ConstScorer(), max_val=0.5, start=np.int64(3), end=np.int32(9))
+    assert (c.start, c.end) == (3, 9) and type(c.start) is int
+
+
+def test_negative_start_is_cut_back_with_a_warning():
+    with pytest.warns(UserWarning, match="before the sequence start"):
+        c = Condition(ConstScorer(), max_val=0.5, start=-5, end=20)
+    assert c.start == 0
+
+
+def test_end_past_the_sequence_is_cut_back_on_bind(grid):
+    c = Condition(ConstScorer(), max_val=0.5, end=grid.seq_len + 10)
+    assert c.end == grid.seq_len + 10  # the length is not known before binding
+    with pytest.warns(UserWarning, match="past the sequence end"):
+        c.bind(ConstScorer().build_map("A" * grid.seq_len, grid))
+    assert c.end == grid.seq_len
+    assert c.version == 0  # fitting on bind is not a change
+
+
+def test_area_outside_the_sequence_is_refused_on_bind(grid):
+    c = Condition(ConstScorer(), max_val=0.5, start=grid.seq_len)
+    with pytest.raises(ValueError, match="outside the sequence"):
+        c.bind(ConstScorer().build_map("A" * grid.seq_len, grid))
+    assert c.map is None
+
+
+def test_area_shorter_than_any_overlap_warns(grid):
+    c = Condition(ConstScorer(fill=1.0), max_val=0.5, start=10, end=10 + grid.min_len - 1)
+    with pytest.warns(UserWarning, match="shorter than the shortest overlap"):
+        c.bind(ConstScorer(fill=1.0).build_map("A" * grid.seq_len, grid))
+    assert c.feasible().all()
+
+
+def test_area_changes_bump_the_version():
+    c = Condition(BoundaryMotif(), max_val=1)
+    c.start = 10
+    assert c.version == 1 and c.start == 10
+    c.update(start=10, end=None)  # nothing changed
+    assert c.version == 1
+    c.update(start=0, end=30)
+    assert c.version == 2 and (c.start, c.end) == (0, 30)
+    c.end = None
+    assert c.version == 3 and c.end is None
+
+
+def test_area_update_is_checked_as_a_whole_and_refused_atomically():
+    c = Condition(BoundaryMotif(), max_val=1, start=10, end=20)
+    c.update(start=30, end=40)  # moving past the old end is fine in one call
+    assert (c.start, c.end) == (30, 40)
+    with pytest.raises(ValueError, match="less than end"):
+        c.start = 50
+    assert (c.start, c.end, c.version) == (30, 40, 1)
+
+
+def test_area_update_on_a_bound_condition_is_cut_back(grid):
+    c = bound(ConstScorer(), "A" * grid.seq_len, grid, max_val=0.5)
+    with pytest.warns(UserWarning, match="past the sequence end"):
+        c.update(start=10, end=grid.seq_len + 1)
+    assert (c.start, c.end) == (10, grid.seq_len)
+    with pytest.raises(ValueError, match="outside the sequence"):
+        c.start = grid.seq_len + 3
+    assert c.start == 10
+
+
+@pytest.mark.parametrize(
+    "start,end,rows",
+    [(None, None, None), (10, 30, (10, 25)), (None, 20, (0, 15)), (40, None, (40, 45)),
+     (10, 13, None)],  # 3 bp holds no overlap of 5 or more
+)
+def test_area_rows(grid, start, end, rows):
+    c = Condition(ConstScorer(), max_val=0.5, start=start, end=end)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        c.bind(ConstScorer().build_map("A" * grid.seq_len, grid))
+    assert c.area_rows() == rows
+
+
 # --------------------------------------------------------------------------- BackgroundKmers
 
 
@@ -738,6 +860,25 @@ def test_plot_rows_draws_only_set_thresholds(plt, grid, kwargs, labels):
     assert drawn == labels
     for line, name in zip(ax.lines, labels):
         assert list(line.get_ydata()) == pytest.approx([kwargs[name]] * 2)
+
+
+def shaded_spans(ax) -> list[tuple[float, float]]:
+    """x extents of the axvspan patches."""
+    return [(p.get_x(), p.get_x() + p.get_width()) for p in ax.patches]
+
+
+def test_plot_rows_shades_the_area(plt, grid):
+    c = bound(ConstScorer(fill=0.3), "A" * grid.seq_len, grid, max_val=0.5, start=10, end=30)
+    ax = c.plot_rows(0, 20)  # area rows are 10..25, the plot shows 0..19
+    assert shaded_spans(ax) == [(9.5, 19.5)]
+    assert "area [10, 30)" in ax.get_legend_handles_labels()[1]
+
+
+def test_plot_rows_does_not_shade_without_an_area_or_outside_the_range(plt, grid):
+    c = bound(ConstScorer(fill=0.3), "A" * grid.seq_len, grid, max_val=0.5)
+    assert shaded_spans(c.plot_rows(0, 20)) == []
+    c = bound(ConstScorer(fill=0.3), "A" * grid.seq_len, grid, max_val=0.5, start=30)
+    assert shaded_spans(c.plot_rows(0, 20)) == []
 
 
 def test_plot_rows_uses_given_axes(plt, grid):

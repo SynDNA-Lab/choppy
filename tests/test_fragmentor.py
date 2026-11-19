@@ -692,14 +692,17 @@ def test_same_name_on_both_levels_is_fine():
     f.add_condition(motif(max_val=0, name="gc"), fragment=True)
 
 
-def test_second_condition_on_an_equal_scorer_is_rejected_before_binding():
-    ov = Overlaps("A" * 30, 4, 7)
-    ov.add_condition(motif("GC", max_val=0, name="strict"))
-    second = motif("GC", max_val=1)  # an equal scorer, though a separate instance
-    with pytest.raises(ValueError, match=r"already a condition on BoundaryMotif.*\(strict\)"):
-        ov.add_condition(second)
-    assert second.map is None and len(ov.conditions) == 1
-    ov.add_condition(motif("CG", max_val=1))  # a different scorer is fine
+def test_conditions_on_an_equal_scorer_share_the_map_and_all_apply():
+    ov = Overlaps("A" * 60, 4, 7)
+    fill = np.random.default_rng(2).random(ov.shape).astype(np.float16)
+    scorer = ConstScorer(fill)
+    first = Condition(scorer, max_val=0.3, start=0, end=40)
+    second = Condition(scorer, max_val=0.6, start=30)
+    ov.add_condition(first)
+    ov.add_condition(second)
+    assert first.map.values.base is second.map.values.base  # one map in the store
+    assert len(ov.maps) == 1
+    np.testing.assert_array_equal(ov.feasible_mask(), first.feasible() & second.feasible())
 
 
 def test_label_is_the_name_or_the_scorer_class():
@@ -785,6 +788,35 @@ def test_update_changes_the_feasible_candidates():
     loose = set(ov.generate_candidates(40))
     assert strict < loose
     assert len(loose) - 2 == ov.grid.edge_mask(40).sum()
+
+
+def test_area_limits_a_condition_on_the_level():
+    ov = Overlaps("A" * 60, 4, 7)
+    ov.add_condition(const(fill=np.ones(ov.shape), max_val=0.5, start=20, end=40))
+    inside = (ov.grid.starts >= 20) & (ov.grid.ends <= 40)
+    np.testing.assert_array_equal(ov.feasible_mask(), ~inside)
+    s, e = zip(*list(ov.generate_candidates(10))[1:-1])
+    assert not any(20 <= a and b <= 40 for a, b in zip(s, e))
+
+
+def test_area_changes_make_the_candidates_stale():
+    ov = Overlaps("A" * 60, 4, 7)
+    c = const(fill=np.ones(ov.shape), max_val=0.5, start=20, end=40)
+    ov.add_condition(c)
+    before = set(ov.generate_candidates(10))
+    c.start = 30
+    assert ov.candidates_stale
+    after = set(ov.generate_candidates(10))
+    assert before < after
+
+
+def test_fragment_level_cuts_the_area_back_to_its_sequence():
+    seq = random_seq(300)
+    ov = Overlaps(seq, 10, 15)
+    c = motif("GC", max_val=0, end=400)
+    with pytest.warns(UserWarning, match="past the sequence end"):
+        ov.add_condition(c)
+    assert c.end == 300 and c in ov.conditions
 
 
 def test_update_moves_a_condition_between_constraints_and_objectives():

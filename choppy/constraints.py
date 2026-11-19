@@ -135,12 +135,20 @@ class OverlapGrid:
         offset = sub.min_len - self.min_len
         return slice(0, sub.shape[0]), slice(offset, offset + sub.shape[1])
 
-    def edge_mask(self, min_edge_len: int) -> np.ndarray:
+    def edge_mask(self, min_edge_len: int, start: int | None = None, end: int | None = None) -> np.ndarray:
         """
-        Cells that represent overlaps that can never potentially be used since they
-        correspond to a segment/fragment that is shroter than the provided minimum.
+        Cells whose overlap can be used: the ones that leave room for a segment/fragment of
+        at least min_edge_len at both sequence edges.
+
+        start and end narrow it further to the overlaps lying wholly inside [start, end)
+        (start <= overlap start, overlap end <= end); None leaves that side open.
         """
-        return (self.ends >= min_edge_len) & (self.starts <= self.seq_len - min_edge_len)
+        mask = (self.ends >= min_edge_len) & (self.starts <= self.seq_len - min_edge_len)
+        if start is not None:
+            mask &= self.starts >= start
+        if end is not None:
+            mask &= self.ends <= end
+        return mask
 
 @dataclass
 class OverlapMap:
@@ -198,7 +206,7 @@ class AbstractScorer(ABC):
         the multiplier that turns them back into the scorer's own units."""
 
 
-THRESHOLDS = ("min_val", "max_val", "opt_val")
+THRESHOLDS = ("min_val", "max_val", "opt_val", "start", "end")
 _UNSET = object()  # "not given" for Condition.update, where None means "remove"
 
 
@@ -218,33 +226,85 @@ class Condition:
     still separate conditions. The map is attached by the owning Overlaps. name is
     optional; when set it must be unique on the level, which can then look it up by it.
 
-    The thresholds can be changed after the condition is added, with update or by
-    plain assignment (`c.max_val = 3`). Every change that alters a value bumps version,
-    which is how the owning level notices that its candidates are out of date. A change
-    that would leave no threshold at all is refused and leaves the condition as it was.
-    The scorer cannot be swapped once the condition is bound: its map would no longer
-    match it.
+    start and end limit the condition to an area of the sequence: it applies only to the
+    overlaps lying wholly inside [start, end), and admits every other overlap. None leaves
+    that side open. An area reaching past the sequence is cut back to it with a warning
+    (start below 0 at once, end past the sequence once the condition is bound and the
+    length is known).
+
+    An overlap straddling an area boundary is wholly inside neither side, so conditions
+    that split the sequence into abutting areas (e.g. [0, 1000) and [1000, None)) leave the
+    overlaps across the split unchecked. Let neighbouring areas overlap by at least the
+    longest overlap to cover them.
+
+    The thresholds and the area can be changed after the condition is added, with update
+    or by plain assignment (`c.max_val = 3`, `c.start = 100`). Every change that alters a
+    value bumps version, which is how the owning level notices that its candidates are
+    out of date. A change that would leave no threshold at all, or an empty area, is
+    refused and leaves the condition as it was. The scorer cannot be swapped once the
+    condition is bound: its map would no longer match it.
     """
     scorer: AbstractScorer
     min_val: np.float16 | None = None
     max_val: np.float16 | None = None
     opt_val: np.float16 | None = None
+    start: int | None = None
+    end: int | None = None
     name: str | None = None
     map: OverlapMap | None = field(default=None, init=False, repr=False)
     version: int = field(default=0, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self._check_thresholds(self.min_val, self.max_val, self.opt_val)
+        self.start, self.end = self._fit_area(self.start, self.end, None)
+        self._check_thresholds(self.min_val, self.max_val, self.opt_val, self.start, self.end)
         # __init__ leaves an init=False field with a plain default to the class attribute,
         # so version only reaches the instance here: its presence in __dict__ marks the
         # end of construction, after which threshold assignments go through update
         object.__setattr__(self, "version", 0)
 
     @staticmethod
-    def _check_thresholds(min_val, max_val, opt_val) -> None:
+    def _check_thresholds(min_val, max_val, opt_val, start, end) -> None:
         if min_val is None and max_val is None and opt_val is None:
             raise ValueError("Condition has no thresholds or objectives set: it is neither a constraint "
                              "nor an objective")
+
+        if start is not None and end is not None and start >= end:
+            raise ValueError(f"Condition start {start} must be less than end {end}")
+
+    @staticmethod
+    def _fit_area(start, end, grid: OverlapGrid | None) -> tuple[int | None, int | None]:
+        """start and end as plain ints, cut back to the sequence with a warning for each
+        side that reaches past it.
+
+        Without a grid the sequence length is not known yet, so only start is cut back;
+        bind fits the area again once it is. start >= end is left to _check_thresholds.
+        """
+        for name, value in (("start", start), ("end", end)):
+            if value is not None and (isinstance(value, bool)
+                                      or not isinstance(value, (int, np.integer))):
+                raise TypeError(f"Condition {name} must be an int or None, got {value!r}")
+        start = None if start is None else int(start)
+        end = None if end is None else int(end)
+        if start is not None and start < 0:
+            warnings.warn(f"Condition start {start} is before the sequence start; using 0",
+                          stacklevel=4)
+            start = 0
+        if grid is None:
+            return start, end
+        if end is not None and end > grid.seq_len:
+            warnings.warn(f"Condition end {end} is past the sequence end; using {grid.seq_len}",
+                          stacklevel=4)
+            end = grid.seq_len
+        lo = 0 if start is None else start
+        hi = grid.seq_len if end is None else end
+        if lo >= hi:
+            raise ValueError(f"Condition area [{start}, {end}) lies outside the sequence "
+                             f"of {grid.seq_len}")
+        if hi - lo < grid.min_len:
+            warnings.warn(f"Condition area [{lo}, {hi}) is shorter than the shortest overlap "
+                          f"({grid.min_len}), so the condition admits every overlap",
+                          stacklevel=4)
+        return start, end
 
     def __setattr__(self, name: str, value) -> None:
         if "version" not in self.__dict__:  # still inside __init__
@@ -256,15 +316,17 @@ class Condition:
         else:
             super().__setattr__(name, value)
 
-    def update(self, min_val=_UNSET, max_val=_UNSET, opt_val=_UNSET) -> None:
-        """Change any of the thresholds at once; None removes one, an omitted one is kept.
+    def update(self, min_val=_UNSET, max_val=_UNSET, opt_val=_UNSET, start=_UNSET, end=_UNSET) -> None:
+        """Change any of the thresholds and area bounds at once; None removes one, an
+        omitted one is kept.
 
         The new set is checked as a whole before anything is changed, so a condition can
-        be turned from a constraint into an objective in one call. version is bumped once,
-        and only if some value actually changed.
+        be turned from a constraint into an objective, or its area moved, in one call.
+        version is bumped once, and only if some value actually changed.
         """
-        given = {"min_val": min_val, "max_val": max_val, "opt_val": opt_val}
+        given = {"min_val": min_val, "max_val": max_val, "opt_val": opt_val, "start": start, "end": end}
         new = {k: (getattr(self, k) if v is _UNSET else v) for k, v in given.items()}
+        new["start"], new["end"] = self._fit_area(new["start"], new["end"], self.grid)
         self._check_thresholds(**new)
         changed = {k: v for k, v in new.items() if not _same(v, getattr(self, k))}
         if not changed:
@@ -298,6 +360,11 @@ class Condition:
                 f"Condition is already bound to a map on {self.map.grid}. "
                 f"Use a separate Condition for the other level."
             )
+        # the sequence length is known only now; fitting first leaves a condition whose
+        # area is refused unbound. Not a change of the area, so version stays.
+        start, end = self._fit_area(self.start, self.end, overlap_map.grid)
+        object.__setattr__(self, "start", start)
+        object.__setattr__(self, "end", end)
         self.map = overlap_map
 
     def feasible(self) -> np.ndarray:
@@ -310,14 +377,15 @@ class Condition:
         if self.map is None:
             raise ValueError("Condition must be bound to a map before feasible")
         values = self.map.get_values()
+        outside = ~self.grid.edge_mask(self.grid.min_len, self.start, self.end)
         if self.min_val is None and self.max_val is None:
-            return np.ones(values.shape, dtype=bool)
+            return np.ones(values.shape, dtype=bool) | outside
         if self.min_val is None:
-            return values <= self.max_val
+            return (values <= self.max_val) | outside
         ok = values >= self.min_val
         if self.max_val is not None:
             ok &= values <= self.max_val
-        return ok
+        return ok | outside
 
     # ---- visualization -------------------------------------------------------------
     # matplotlib is an optional dependency (the `plot` extra), so it is imported only
@@ -343,6 +411,26 @@ class Condition:
             if value is not None:
                 ax.axhline(float(value), linewidth=1.5, label=f"{name} = {float(value):g}", **style)
 
+    def area_rows(self) -> tuple[int, int] | None:
+        """The overlap starts [first, last] with at least one overlap inside the area, or
+        None when the condition covers the whole sequence or no overlap fits the area."""
+        if self.start is None and self.end is None:
+            return None
+        first = 0 if self.start is None else self.start
+        hi = self.grid.seq_len if self.end is None else self.end
+        last = min(hi - self.grid.min_len, self.grid.shape[0] - 1)
+        return (first, last) if first <= last else None
+
+    def _plot_area(self, ax, a: int, b: int) -> None:
+        """Shade the overlap starts in [a, b) that the area applies to."""
+        rows = self.area_rows()
+        if rows is None:
+            return
+        lo, hi = max(rows[0], a), min(rows[1], b - 1)
+        if lo <= hi:
+            ax.axvspan(lo - 0.5, hi + 0.5, color="tab:orange", alpha=0.12, zorder=0,
+                       label=f"area [{self.start}, {self.end})")
+
     def plot_rows(self, a: int = 0, b: int = None, ax=None):
         """Plot, for each overlap start in [a, b), its minimal score across all overlap lengths.
 
@@ -355,9 +443,12 @@ class Condition:
         if not 0 <= a < b <= n_starts:
             raise ValueError(f"Row range [{a}, {b}) must be non-empty and within [0, {n_starts})")
 
+        ## TODO: think about it later. With an area set, rows near its end also take the min
+        ## over long overlaps that run past end, which the condition does not check.
         best = self.map.get_values()[a:b].min(axis=1).astype(np.float64)
 
         ax.scatter(np.arange(a, b), best, s=8, color="tab:blue", label="min score", zorder=3)
+        self._plot_area(ax, a, b)
         self._plot_thresholds(ax)
         ax.set_xlabel("overlap start")
         ax.set_ylabel("score")
