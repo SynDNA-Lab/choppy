@@ -1054,3 +1054,43 @@ def test_add_relaxed_bumps_the_version_and_relaxed_cannot_be_assigned(grid):
     assert c.version == 1 and len(c.relaxed) == 1
     with pytest.raises(AttributeError, match="add_relaxed"):
         c.relaxed = ()
+
+
+def test_remove_relaxed_by_id_restores_the_main_rule():
+    c = bound(ConstScorer(), "AAA", SMALL_GRID, max_val=0.25)
+    c.map.values[:] = VALUES
+    loose = c.add_relaxed(max_val=1.0, extra_penalty=5.0)
+    medium = c.add_relaxed(max_val=0.75, extra_penalty=2.0)
+    assert (loose, medium) == (0, 1)
+    assert [r.id for r in c.relaxed] == [loose, medium]  # sorted by penalty, largest first
+    c.remove_relaxed(medium)
+    np.testing.assert_array_equal(c.feasible(), [[0, 0, 5], [5, 5, np.inf]])
+    c.remove_relaxed(loose)
+    np.testing.assert_array_equal(c.feasible(), [[0, 0, np.inf], [np.inf, np.inf, np.inf]])
+    assert c.version == 4
+    assert c.add_relaxed(max_val=1.0, extra_penalty=1.0) == 2  # ids are not reused
+
+
+def test_remove_relaxed_without_id_removes_all(grid):
+    c = bound(ConstScorer(fill=0.0), "A" * grid.seq_len, grid, max_val=0.5)
+    c.remove_relaxed()  # nothing to remove: not a change
+    assert c.version == 0
+    c.add_relaxed(max_val=1.0, extra_penalty=1.0)
+    c.add_relaxed(max_val=2.0, extra_penalty=3.0)
+    c.remove_relaxed()
+    assert c.relaxed == () and c.version == 3
+
+
+def test_remove_relaxed_rejects_an_unknown_id(grid):
+    c = bound(ConstScorer(fill=0.0), "A" * grid.seq_len, grid, max_val=0.5)
+    rid = c.add_relaxed(max_val=1.0, extra_penalty=1.0)
+    with pytest.raises(KeyError, match="current ids: \\[0\\]"):
+        c.remove_relaxed(rid + 1)
+    assert len(c.relaxed) == 1 and c.version == 1
+
+
+def test_relaxed_versions_are_not_shared_between_conditions(grid):
+    a = bound(ConstScorer(fill=0.0), "A" * grid.seq_len, grid, max_val=0.5)
+    b = bound(ConstScorer(fill=0.0), "A" * grid.seq_len, grid, max_val=0.5)
+    a.add_relaxed(max_val=1.0, extra_penalty=1.0)
+    assert b.relaxed == () and b.add_relaxed(max_val=1.0) == 0

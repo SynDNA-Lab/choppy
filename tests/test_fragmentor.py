@@ -974,3 +974,15 @@ def test_chop_bridges_a_gap_with_a_local_relaxation():
     penalised = [(s, e) for s, e in asm.overlaps if s < 461 and e > 300]
     assert len(penalised) == 1  # it pays for the relaxation once, not more
     assert all(250 <= s and e <= 520 for s, e in penalised)
+
+
+def test_remove_relaxed_makes_the_candidates_stale_and_reopens_the_gap():
+    f = Fragmentor(random_seq(1000), **SEG)
+    c = block(300, 461)
+    f.add_condition(c)
+    rid = c.add_relaxed(max_val=1.0, extra_penalty=10.0, start=250, end=520)
+    f.chop()
+    c.remove_relaxed(rid)
+    assert f.segment_overlaps.candidates_stale
+    with pytest.raises(GapError):
+        f.chop()

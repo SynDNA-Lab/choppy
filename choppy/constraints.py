@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import NamedTuple
 from abc import ABC, abstractmethod
 import warnings
 import numpy as np
@@ -222,6 +223,17 @@ class AbstractScorer(ABC):
         real = offset + scale * stored. A cell left unwritten stays NaN, unusable."""
 
 
+class Relaxed(NamedTuple):
+    """One relaxed version of a condition (see Condition.add_relaxed). A bound left None
+    follows the main one; id is what Condition.remove_relaxed takes."""
+    id: int
+    min_val: float | None
+    max_val: float | None
+    extra_penalty: float
+    start: int | None
+    end: int | None
+
+
 THRESHOLDS = ("min_val", "max_val", "opt_val", "start", "end")
 _UNSET = object()  # "not given" for Condition.update, where None means "remove"
 
@@ -267,9 +279,10 @@ class Condition:
     start: int | None = None
     end: int | None = None
     name: str | None = None
-    # added only through add_relaxed, which bumps version; a tuple, so it cannot be changed
-    # in place, and kept sorted by extra_penalty, largest first
-    relaxed: tuple = field(default=(), init=False, repr=False)
+    # changed only through add_relaxed and remove_relaxed, which bump version; a tuple of
+    # Relaxed, so it cannot be changed in place, and kept sorted by extra_penalty, largest first
+    relaxed: tuple[Relaxed, ...] = field(default=(), init=False, repr=False)
+    _next_relaxed_id: int = field(default=0, init=False, repr=False)
     map: OverlapMap | None = field(default=None, init=False, repr=False)
     version: int = field(default=0, init=False, repr=False)
 
@@ -345,7 +358,7 @@ class Condition:
         elif name == "scorer" and self.map is not None:
             raise AttributeError("The scorer of a bound condition cannot be changed: add a new Condition")
         elif name == "relaxed":
-            raise AttributeError("Relaxed conditions cannot be assigned: use add_relaxed")
+            raise AttributeError("Relaxed conditions cannot be assigned: use add_relaxed / remove_relaxed")
         else:
             super().__setattr__(name, value)
 
@@ -431,7 +444,7 @@ class Condition:
         penalties = np.full(values.shape, np.inf)
 
         # sorted largest penalty first, so where several pass the smallest is written last
-        for r_min, r_max, r_penalty, r_start, r_end in self.relaxed:
+        for _, r_min, r_max, r_penalty, r_start, r_end in self.relaxed:
             # a relaxed bound left None follows the main one, as it is now
             r_lower = self.lower if r_min is None else r_min
             r_upper = self.upper if r_max is None else r_max
@@ -441,7 +454,7 @@ class Condition:
         penalties[((values >= self.lower) & (values <= self.upper)) | outside] = 0.0
         return penalties
 
-    def add_relaxed(self, min_val: float | None = None, max_val: float | None = None, extra_penalty: float = 0.0, start: int | None = None, end: int | None = None) -> None:
+    def add_relaxed(self, min_val: float | None = None, max_val: float | None = None, extra_penalty: float = 0.0, start: int | None = None, end: int | None = None) -> int:
         """Add a relaxed version of this condition, with looser thresholds, possibly over
         only part of its area. The relaxed version is checked only where the main one
         fails: an overlap it admits gets extra_penalty instead of being forbidden, and
@@ -455,6 +468,8 @@ class Condition:
         follows the main one, including through later updates of it; those updates do
         not check the relaxed versions again. An area side left None takes the main one
         as it is now.
+
+        Returns the id of the new version, for remove_relaxed. Ids are not reused.
         """
         if self.map is None:
             raise ValueError("Condition must be bound to a map before adding a relaxed one")
@@ -479,8 +494,29 @@ class Condition:
             raise ValueError(f"Relaxed start {start} must be less than end {end}")
         if not extra_penalty >= 0:  # also refuses NaN, which fails every comparison
             raise ValueError(f"Relaxed extra_penalty {extra_penalty} must be non-negative")
-        relaxed = self.relaxed + ((min_val, max_val, extra_penalty, start, end),)
-        object.__setattr__(self, "relaxed", tuple(sorted(relaxed, key=lambda r: r[2], reverse=True)))
+        rid = self._next_relaxed_id
+        new = Relaxed(rid, min_val, max_val, float(extra_penalty), start, end)
+        self._set_relaxed(self.relaxed + (new,))
+        object.__setattr__(self, "_next_relaxed_id", rid + 1)
+        return rid
+
+    def remove_relaxed(self, rid: int | None = None) -> None:
+        """Remove the relaxed version with id rid (as returned by add_relaxed), or all of
+        them when rid is None. To change one, remove it and add the new version."""
+        if rid is None:
+            if self.relaxed:
+                self._set_relaxed(())
+            return
+        kept = tuple(r for r in self.relaxed if r.id != rid)
+        if len(kept) == len(self.relaxed):
+            ids = [r.id for r in self.relaxed]
+            raise KeyError(f"No relaxed version with id {rid!r}; current ids: {ids}")
+        self._set_relaxed(kept)
+
+    def _set_relaxed(self, relaxed: tuple) -> None:
+        """Store relaxed sorted by extra_penalty, largest first, and bump version."""
+        ordered = tuple(sorted(relaxed, key=lambda r: r.extra_penalty, reverse=True))
+        object.__setattr__(self, "relaxed", ordered)
         object.__setattr__(self, "version", self.version + 1)
 
     # ---- visualization -------------------------------------------------------------

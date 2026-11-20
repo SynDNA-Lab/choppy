@@ -86,7 +86,10 @@ A scorer plus thresholds. Fields: `scorer`, `min_val`, `max_val`, `opt_val`, `na
 - `add_relaxed(min_val, max_val, extra_penalty, start, end)`: adds a looser version
   (floor no higher, ceiling no lower) with a non-negative penalty, over the main area or
   a part of it (a local relaxation). A bound left `None` follows the main one; an area
-  side left `None` takes the main one. Bumps `version`.
+  side left `None` takes the main one. Bumps `version`; returns the
+  version's id (a `Relaxed` named tuple in `relaxed`).
+- `remove_relaxed(rid=None)`: removes the relaxed version with that id (all of them
+  when `None`); `KeyError` for an unknown id. Bumps `version`. Editing = remove + add.
 - `_plot_axes(ax)`: uses the given axes or creates new ones.
 - `_plot_thresholds(ax)`: draws horizontal threshold lines.
 - `plot_rows(a, b, ax)`: scatter of the minimum score per overlap start.
