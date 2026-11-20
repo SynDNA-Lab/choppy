@@ -182,49 +182,58 @@ class Overlaps:
         names = [c.name for c in self.conditions if c.name is not None]
         raise KeyError(f"No condition named {name!r} on this level; named ones: {names}")
 
-    def feasible_mask(self) -> np.ndarray:
-        """Boolean mask of the overlaps that satisfy all constraints."""
-
-        mask = np.ones(self.shape, dtype=bool)
+    def feasible_penalties(self) -> np.ndarray:
+        """Extra penalty of each overlap under all constraints: the sum of their
+        feasible() penalties, so 0 where every constraint passes outright, the relaxed
+        penalties added up where some pass only relaxed, and inf where any forbids it."""
+        penalties = np.zeros(self.shape, dtype=float)
         for constraint in self.constraints:
-            mask &= constraint.feasible()
-        return mask
+            penalties += constraint.feasible()
+        return penalties
 
-    def _thin(self, mask: np.ndarray) -> np.ndarray:
-        ## TODO (after objective scoring): thin with respect to objectives, keeping the best options
-        """Thins the mask of feasible overlaps to avoid excessive candidates."""
+    def _thin(self, penalties: np.ndarray) -> np.ndarray:
+        """Thin the feasible overlaps (finite penalties) to avoid excessive candidates.
 
+        Keeps no two overlaps closer than min_step (|delta start| + |delta end|), setting
+        the dropped ones to inf. The overlaps are taken greedily, smallest penalty first
+        (then by start, then end), so a penalised overlap is kept only away from every
+        kept better one. Works in place and returns penalties.
+        """
+        ## TODO (after objective scoring): thin with respect to objectives too
         if self.min_step is None:
-            return mask
+            return penalties
 
+        # all (i, -i + j) with |i| + |j| < min_step, before and after the overlap
         offsets = []
-        for i in range(self.min_step):
-            for j in range(self.min_step - i):
+        for i in range(-self.min_step + 1, self.min_step):
+            reach = self.min_step - abs(i)
+            for j in range(-reach + 1, reach):
+                if i == 0 and j == 0:
+                    continue  # don't mask the overlap itself
                 offsets.append((i, -i + j))
-                if j > 0:
-                    offsets.append((i, -i - j))
-                    
-        offsets.pop(0)  # don't mask the overlap itself
         offsets = np.array(offsets)
 
-        for i, j in np.argwhere(mask):
-            if not mask[i, j]:
-                continue
-
-            rows, cols = i + offsets[:, 0], j + offsets[:, 1]
-            inside = (rows < mask.shape[0]) & (cols < mask.shape[1]) & (rows >= 0) & (cols >= 0)
-            mask[rows[inside], cols[inside]] = False
-        return mask
+        for level in np.unique(penalties[~np.isinf(penalties)]):
+            for i, j in np.argwhere(penalties == level):
+                if np.isinf(penalties[i, j]):  # dropped by a kept overlap of this level
+                    continue
+                rows, cols = i + offsets[:, 0], j + offsets[:, 1]
+                inside = (rows < penalties.shape[0]) & (cols < penalties.shape[1]) & (rows >= 0) & (cols >= 0)
+                penalties[rows[inside], cols[inside]] = np.inf
+        return penalties
 
     def generate_candidates(self, min_edge_len: int) -> Candidates:
         """Potential overlaps, sorted by start then end, between the two edge sentinels:
-        the feasible ones, with no extra penalty, and every overlap added by hand, with
-        its own (it replaces a generated one at the same start and end)."""
-        mask = self.feasible_mask() & self.grid.edge_mask(min_edge_len)
-        mask = self._thin(mask)
+        the feasible ones, with the extra penalty of the relaxed constraints they pass, and
+        every overlap added by hand, with its own (it replaces a generated one at the same
+        start and end)."""
+        penalties = self.feasible_penalties()
+        penalties[~self.grid.edge_mask(min_edge_len)] = np.inf
+        penalties = self._thin(penalties)
 
-        starts, ends = self.grid.overlap(*np.nonzero(mask))
-        candidates = Candidates(len(self.seq), starts, ends)
+        rows, cols = np.nonzero(~np.isinf(penalties))
+        starts, ends = self.grid.overlap(rows, cols)
+        candidates = Candidates(len(self.seq), starts, ends, penalties[rows, cols])
         m = self.manual
         candidates.add(m.starts[1:-1], m.ends[1:-1], m.extra_penalty[1:-1], skip_duplicates=False)
 
@@ -591,7 +600,12 @@ class Fragmentor:
         self._level(fragment).add_candidates(starts, ends, extra_penalty)
 
     def chop(self) -> Assembly:
-        """Cut the sequence into the fewest segments whose overlaps all satisfy the constraints.
+        """Cut the sequence into segments at candidate overlaps, at the lowest cost.
+
+        The cost is the number of segments plus the extra_penalty of every overlap used,
+        so with no penalties it is the fewest segments, and a penalty of p is worth p
+        extra segments: an overlap that passes a constraint only relaxed is used when
+        avoiding it would cost more than that.
 
         Candidates that are missing or stale are (re)generated first, on both levels.
         """
@@ -602,7 +616,8 @@ class Fragmentor:
         c = self.segment_overlaps.candidates
         starts, ends = c.starts, c.ends
 
-        weights, back = self._shortest_path(starts, ends, self.min_segment_len, self.max_segment_len)
+        weights, back = self._shortest_path(starts, ends, self.min_segment_len, self.max_segment_len,
+                                            c.extra_penalty)
         if not np.isfinite(weights[-1]):
             raise NoAssemblyError(self._why_stuck(starts, ends, weights))
 
@@ -613,19 +628,23 @@ class Fragmentor:
         )
 
     @staticmethod
-    def _shortest_path(starts: np.ndarray, ends: np.ndarray,
-                       min_len: int, max_len: int) -> tuple[np.ndarray, np.ndarray]:
-        """Fewest-edges path over the overlaps, each edge one segment.
+    def _shortest_path(starts: np.ndarray, ends: np.ndarray, min_len: int, max_len: int,
+                       extra_penalty: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+        """Cheapest path over the overlaps, each edge one segment.
 
         The overlaps are sorted by start and every edge runs forward, so one sweep in that
         order settles each vertex before it is used. An edge from i to j is the segment
-        [start_i, end_j); it carries weight 1, so a shortest path is a shortest assembly.
+        [start_i, end_j); it carries weight 1 plus the extra_penalty of overlap j (0 for
+        the end sentinel), so a path costs its segments plus the penalties of the overlaps
+        it uses, and without penalties a shortest path is a shortest assembly.
 
         Each vertex relaxes its whole window at once. Starts are sorted, so the window ends
         at the first start out of segment reach, and the segment length is then checked
         against both bounds per candidate.
         """
         n = len(starts)
+        if extra_penalty is None:
+            extra_penalty = np.zeros(n)
         weights = np.full(n, np.inf)
         back = np.full(n, -1, dtype=np.int64)
         weights[0] = 0.0
@@ -640,12 +659,12 @@ class Fragmentor:
 
             window = slice(i + 1, stop)
             length = ends[window] - opened
-            weight = weights[i] + 1.0
+            weight = weights[i] + 1.0 + extra_penalty[window]
             better = (length >= min_len) & (length <= max_len) & (weight < weights[window])
 
-            relaxed = np.flatnonzero(better) + i + 1
-            weights[relaxed] = weight
-            back[relaxed] = i
+            improved = np.flatnonzero(better)
+            weights[improved + i + 1] = weight[improved]
+            back[improved + i + 1] = i
 
         return weights, back
 

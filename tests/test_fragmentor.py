@@ -18,7 +18,7 @@ class ConstScorer(AbstractScorer):
     def _fill(self, seq, grid, values):
         if self.fill is not None:
             values[:] = self.fill
-        return 1.0
+        return 0.0, 1.0
 
 
 def const(fill=None, **thresholds) -> Condition:
@@ -101,12 +101,12 @@ def test_add_condition_routing(kwargs, is_objective, is_constraint):
     assert c.map is not None and c.map.values.shape == ov.shape
 
 
-def test_feasible_mask_without_constraints_is_all_true():
+def test_feasible_penalties_without_constraints_are_all_zero():
     ov = Overlaps("A" * 30, 4, 7)
-    assert ov.feasible_mask().all()
+    assert np.all(ov.feasible_penalties() == 0)
 
 
-def test_feasible_mask_is_and_of_constraints():
+def test_feasible_penalties_forbid_what_any_constraint_forbids():
     ov = Overlaps("A" * 30, 4, 7)
     rng = np.random.default_rng(0)
     a = rng.random(ov.shape).astype(np.float16)
@@ -114,16 +114,37 @@ def test_feasible_mask_is_and_of_constraints():
     ov.add_condition(const(fill=a, max_val=0.6))
     ov.add_condition(const(fill=b, min_val=0.3))
     ov.add_condition(const(fill=np.ones(ov.shape), opt_val=0.0))  # objective only
-    inside = ov.grid.ends <= ov.grid.seq_len  # past the end every score is 1
-    expected = np.where(inside, (a <= 0.6) & (b >= 0.3), (1.0 <= 0.6) & (1.0 >= 0.3))
-    np.testing.assert_array_equal(ov.feasible_mask(), expected)
+    inside = ov.grid.ends <= ov.grid.seq_len  # past the end every score is NaN
+    expected = inside & (a <= 0.6) & (b >= 0.3)
+    np.testing.assert_array_equal(ov.feasible_penalties(), np.where(expected, 0.0, np.inf))
+
+
+def test_feasible_penalties_add_up_the_relaxed_ones():
+    ov = Overlaps("A" * 30, 4, 7)
+    a = np.full(ov.shape, 0.5, dtype=np.float16)
+    first = const(fill=a, max_val=0.2)
+    second = const(fill=a, max_val=0.3)
+    third = const(fill=a, max_val=0.4)
+    for c in (first, second, third):
+        ov.add_condition(c)
+    first.add_relaxed(max_val=0.6, extra_penalty=1.5)
+    second.add_relaxed(max_val=0.6, extra_penalty=0.25)
+    inside = ov.grid.ends <= ov.grid.seq_len
+    assert np.all(np.isinf(ov.feasible_penalties()))     # third still forbids everything
+    third.add_relaxed(max_val=0.5, extra_penalty=2.0)
+    np.testing.assert_array_equal(ov.feasible_penalties(), np.where(inside, 3.75, np.inf))
 
 
 # ------------------------------------------------------------------ thinning
 
 
-def kept_overlaps(ov, mask):
-    s, e = ov.grid.overlap(*np.nonzero(mask))
+def penalties_of(mask, penalty=0.0):
+    """A penalty grid: penalty where mask is set, inf (forbidden) elsewhere."""
+    return np.where(mask, penalty, np.inf)
+
+
+def kept_overlaps(ov, penalties):
+    s, e = ov.grid.overlap(*np.nonzero(np.isfinite(penalties)))
     return list(zip(s.tolist(), e.tolist()))
 
 
@@ -133,15 +154,15 @@ def manhattan(a, b):
 
 def test_thin_without_min_step_is_identity():
     ov = Overlaps("A" * 40, 5, 12)
-    mask = np.random.default_rng(1).random(ov.shape) < 0.5
-    np.testing.assert_array_equal(ov._thin(mask.copy()), mask)
+    penalties = penalties_of(np.random.default_rng(1).random(ov.shape) < 0.5)
+    np.testing.assert_array_equal(ov._thin(penalties.copy()), penalties)
 
 
 @pytest.mark.parametrize("step", [2, 3, 5])
 def test_thin_returns_subset_and_keeps_first(step):
     ov = Overlaps("A" * 40, 5, 12, min_step=step)
     mask = np.random.default_rng(step).random(ov.shape) < 0.6
-    out = ov._thin(mask.copy())
+    out = np.isfinite(ov._thin(penalties_of(mask)))
     assert not np.any(out & ~mask)
     first = tuple(np.argwhere(mask)[0])
     assert out[first]
@@ -153,7 +174,7 @@ def test_thin_suppresses_diagonal_neighbour():
     mask = np.zeros(ov.shape, bool)
     mask[ov.grid.cell(0, 7)] = True
     mask[ov.grid.cell(1, 7)] = True
-    assert kept_overlaps(ov, ov._thin(mask)) == [(0, 7)]
+    assert kept_overlaps(ov, ov._thin(penalties_of(mask))) == [(0, 7)]
 
 
 def test_thin_keeps_far_neighbour():
@@ -162,7 +183,7 @@ def test_thin_keeps_far_neighbour():
     mask = np.zeros(ov.shape, bool)
     mask[ov.grid.cell(0, 7)] = True
     mask[ov.grid.cell(1, 8)] = True
-    assert kept_overlaps(ov, ov._thin(mask)) == [(0, 7), (1, 8)]
+    assert kept_overlaps(ov, ov._thin(penalties_of(mask))) == [(0, 7), (1, 8)]
 
 
 def test_thin_does_not_wrap_negative_columns():
@@ -170,7 +191,7 @@ def test_thin_does_not_wrap_negative_columns():
     mask = np.zeros(ov.shape, bool)
     mask[ov.grid.cell(0, 5)] = True                      # row 0, col 0
     mask[ov.grid.cell(1, 9)] = True                      # row 1, last col: (1,9) vs (0,5) is 5 apart
-    assert kept_overlaps(ov, ov._thin(mask)) == [(0, 5), (1, 9)]
+    assert kept_overlaps(ov, ov._thin(penalties_of(mask))) == [(0, 5), (1, 9)]
 
 
 def test_thin_suppresses_same_start_neighbour():
@@ -178,7 +199,7 @@ def test_thin_suppresses_same_start_neighbour():
     mask = np.zeros(ov.shape, bool)
     mask[ov.grid.cell(0, 7)] = True
     mask[ov.grid.cell(0, 8)] = True
-    assert kept_overlaps(ov, ov._thin(mask)) == [(0, 7)]
+    assert kept_overlaps(ov, ov._thin(penalties_of(mask))) == [(0, 7)]
 
 
 @pytest.mark.parametrize("step", [2, 3, 4, 7])
@@ -186,11 +207,11 @@ def test_thin_result_respects_min_step(step):
     """Documented contract: kept overlaps are pairwise >= min_step apart (start + end)."""
     ov = Overlaps("A" * 40, 5, 12, min_step=step)
     mask = np.random.default_rng(step).random(ov.shape) < 0.6
-    kept = kept_overlaps(ov, ov._thin(mask.copy()))
+    kept = kept_overlaps(ov, ov._thin(penalties_of(mask)))
     too_close = [(a, b) for a, b in itertools.combinations(kept, 2) if manhattan(a, b) < step]
     assert too_close == []
     # and nothing was dropped without a kept overlap close to it
-    for cand in kept_overlaps(ov, mask):
+    for cand in kept_overlaps(ov, penalties_of(mask)):
         assert cand in kept or any(manhattan(cand, k) < step for k in kept)
 
 
@@ -212,7 +233,7 @@ def test_generate_candidates_respects_constraints_and_edges():
         assert 10 <= e - s <= 15
         assert e >= 40 and len(seq) - s >= 40
         assert seq[s] in "GC" and seq[e - 1] in "GC"
-    expected = ov.feasible_mask() & ov.grid.edge_mask(40)
+    expected = np.isfinite(ov.feasible_penalties()) & ov.grid.edge_mask(40)
     assert cands.n_overlaps == expected.sum()
 
 
@@ -486,7 +507,7 @@ class BlockRegion(AbstractScorer):
 
     def _fill(self, seq, grid, values):
         values[:] = (grid.starts < self.b) & (grid.ends > self.a)
-        return 1.0
+        return 0.0, 1.0
 
 
 def block(a, b) -> Condition:
@@ -702,7 +723,7 @@ def test_conditions_on_an_equal_scorer_share_the_map_and_all_apply():
     ov.add_condition(second)
     assert first.map.values.base is second.map.values.base  # one map in the store
     assert len(ov.maps) == 1
-    np.testing.assert_array_equal(ov.feasible_mask(), first.feasible() & second.feasible())
+    np.testing.assert_array_equal(ov.feasible_penalties(), first.feasible() + second.feasible())
 
 
 def test_label_is_the_name_or_the_scorer_class():
@@ -794,7 +815,7 @@ def test_area_limits_a_condition_on_the_level():
     ov = Overlaps("A" * 60, 4, 7)
     ov.add_condition(const(fill=np.ones(ov.shape), max_val=0.5, start=20, end=40))
     inside = (ov.grid.starts >= 20) & (ov.grid.ends <= 40)
-    np.testing.assert_array_equal(ov.feasible_mask(), ~inside)
+    np.testing.assert_array_equal(ov.feasible_penalties(), np.where(inside, np.inf, 0.0))
     s, e = zip(*list(ov.generate_candidates(10))[1:-1])
     assert not any(20 <= a and b <= 40 for a, b in zip(s, e))
 
@@ -891,3 +912,65 @@ def test_a_later_hand_added_candidate_replaces_an_earlier_one():
     ov.add_candidates(30, 36, extra_penalty=0.9)
     assert ov.manual.extra_penalty.tolist() == [0.0, 0.9, 0.0]
     assert ov.generate_candidates(20).extra_penalty.tolist() == [0.0, 0.9, 0.0]
+
+
+# ------------------------------------------------------------------ relaxed constraints
+
+
+def test_thin_keeps_the_smaller_penalty_of_two_neighbours():
+    # (0, 7) comes first in the grid, but (1, 7) passes outright and wins
+    ov = Overlaps("A" * 40, 5, 12, min_step=2)
+    penalties = np.full(ov.shape, np.inf)
+    penalties[ov.grid.cell(0, 7)] = 1.0
+    penalties[ov.grid.cell(1, 7)] = 0.0
+    assert kept_overlaps(ov, ov._thin(penalties)) == [(1, 7)]
+
+
+def test_generated_candidates_carry_the_relaxed_penalties():
+    ov = Overlaps(random_seq(200, seed=4), 10, 15)
+    fill = np.random.default_rng(4).random(ov.shape).astype(np.float16)
+    c = const(fill=fill, max_val=0.3)
+    ov.add_condition(c)
+    c.add_relaxed(max_val=0.6, extra_penalty=2.0)
+    assert ov.candidates_stale
+    cands = ov.generate_candidates(40)
+    penalty = c.feasible()
+    for (s, e), p in zip(list(cands)[1:-1], cands.extra_penalty[1:-1]):
+        assert p == penalty[ov.grid.cell(s, e)]
+    assert set(cands.extra_penalty[1:-1].tolist()) == {0.0, 2.0}
+
+
+def test_add_relaxed_makes_the_candidates_stale():
+    ov = Overlaps(random_seq(200, seed=4), 10, 15)
+    c = motif("[GC]", max_val=0)
+    ov.add_condition(c)
+    ov.generate_candidates(40)
+    assert not ov.candidates_stale
+    c.add_relaxed(max_val=1, extra_penalty=1.0)
+    assert ov.candidates_stale
+
+
+@pytest.mark.parametrize("penalty,through_b", [(0.5, True), (1.5, False)])
+def test_shortest_path_weighs_penalties_against_extra_segments(penalty, through_b):
+    # 0 -> B -> end is 2 segments plus B's penalty; 0 -> A1 -> A2 -> end is 3 segments
+    starts = np.array([0, 90, 140, 190, 300])   # sentinel, A1, B, A2, sentinel
+    ends = np.array([0, 100, 150, 200, 300])
+    extra = np.array([0, 0, penalty, 0, 0])
+    weights, back = Fragmentor._shortest_path(starts, ends, 10, 160, extra)
+    path = Fragmentor._walk_back(back)
+    assert path == ([0, 2, 4] if through_b else [0, 1, 3, 4])
+    assert weights[-1] == (2 + penalty if through_b else 3)
+
+
+def test_chop_bridges_a_gap_with_a_local_relaxation():
+    f = Fragmentor(random_seq(1000), **SEG)
+    c = block(300, 461)  # one bp too long to bridge, see test_chop_reports_unbridgeable_gap
+    f.add_condition(c)
+    with pytest.raises(GapError):
+        f.chop()
+    c.add_relaxed(max_val=1.0, extra_penalty=10.0, start=250, end=520)
+    asm = f.chop()
+    assert asm.segments[0][0] == 0 and asm.segments[-1][1] == 1000
+    penalised = [(s, e) for s, e in asm.overlaps if s < 461 and e > 300]
+    assert len(penalised) == 1  # it pays for the relaxation once, not more
+    assert all(250 <= s and e <= 520 for s, e in penalised)

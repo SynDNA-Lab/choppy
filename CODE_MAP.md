@@ -39,11 +39,12 @@ Converts between overlap coordinates and map cells. Cell `(i, j)` is the overlap
 
 ### `OverlapMap` (dataclass)
 
-One scorer's scores over a grid. Fields: `grid`, `values` (float16 in 0..1),
-`multiplier` (turns scores back into the scorer's own units).
+One scorer's scores over a grid. Fields: `grid`, `values` (float16 in 0..1, 0 the best
+end, NaN for unusable cells), `scale` and `offset` (real value = `offset + scale *
+stored`, in the scorer's own units; `scale` is negative when higher is better).
 
-- `get_cell(i, j)` / `get_overlap(start, end)`: one scaled value.
-- `get_values()`: the whole scaled array.
+- `get_cell(i, j)` / `get_overlap(start, end)`: one real value (float64).
+- `get_values()`: the whole array of real values (float64, so it cannot overflow).
 - `view(grid)`: a numpy **view** (no copy) of a sub-grid, built with
   `OverlapGrid.slices`.
 
@@ -52,9 +53,11 @@ One scorer's scores over a grid. Fields: `grid`, `values` (float16 in 0..1),
 The half of a condition that builds the map. It holds only map parameters and is
 hashable, so equal scorers share one map.
 
-- `build_map(seq, grid)`: pre-fills the values with 1, calls `_fill`, forces cells that
-  run past the sequence end to 1, and returns an `OverlapMap`.
-- `_fill(seq, grid, values)` *(abstract)*: writes the scores and returns the multiplier.
+- `build_map(seq, grid)`: pre-fills the values with NaN, calls `_fill`, forces cells that
+  run past the sequence end to NaN, and returns an `OverlapMap`. NaN fails every
+  threshold, so those cells are infeasible for any condition.
+- `_fill(seq, grid, values)` *(abstract)*: writes the stored scores (0 the best end, or
+  the low end for two-sided quantities) and returns `(offset, scale)`.
 
 ### `Condition` (dataclass, `eq=False`)
 
@@ -63,17 +66,27 @@ A scorer plus thresholds. Fields: `scorer`, `min_val`, `max_val`, `opt_val`, `na
 
 - `__post_init__`: validates the thresholds, then sets `version` on the instance. That
   marks the end of construction.
-- `_check_thresholds(...)` *(static)*: at least one threshold must be set.
+- `_check_thresholds(...)` *(static)*: at least one threshold must be set; no NaN
+  threshold, and `min_val <= max_val` (via `_check_bounds`, shared with `add_relaxed`).
 - `__setattr__`: routes assignments to threshold fields through `update`, and blocks
   swapping `scorer` once the condition is bound.
 - `update(min_val, max_val, opt_val)`: changes thresholds atomically and bumps `version`
   only if a value actually changed. `Overlaps` uses `version` to detect stale candidates.
 - `grid`: the bound map's grid.
 - `label`: `name`, or the scorer's class name if there's no name.
+- `lower` / `upper`: read-only views of `min_val` / `max_val` that give `-inf` / `+inf`
+  when unset, so internal code compares without `None` checks.
 - `is_constraint`: `min_val` or `max_val` is set.
 - `is_objective`: `opt_val` is set.
 - `bind(overlap_map)`: attaches the map once. Called by `Overlaps.add_condition`.
-- `feasible()`: boolean mask of `min_val <= value <= max_val`. NaN counts as infeasible.
+- `feasible()`: penalty per overlap: 0 where `lower <= value <= upper` or outside the
+  area, otherwise the smallest `extra_penalty` of a relaxed version it passes (inside
+  that version's area), `inf` if none. NaN fails every comparison. All 0 for a
+  non-constraint.
+- `add_relaxed(min_val, max_val, extra_penalty, start, end)`: adds a looser version
+  (floor no higher, ceiling no lower) with a non-negative penalty, over the main area or
+  a part of it (a local relaxation). A bound left `None` follows the main one; an area
+  side left `None` takes the main one. Bumps `version`.
 - `_plot_axes(ax)`: uses the given axes or creates new ones.
 - `_plot_thresholds(ax)`: draws horizontal threshold lines.
 - `plot_rows(a, b, ax)`: scatter of the minimum score per overlap start.
@@ -106,7 +119,8 @@ K-mer count table for a background. Fields: `kmer`, `keys` (sorted codes), `coun
 
 Base for k-mer-based scorers. Field: `kmer=15`.
 
-- `_kmer_scores(seq)` *(abstract)*: per-k-mer scores in 0..1, plus the multiplier.
+- `_kmer_scores(seq)` *(abstract)*: per-k-mer scores in 0..1, plus the multiplier, which
+  `_fill` returns as the scale (the offset is 0).
 - `_fill(...)`: worst k-mer score in each overlap, computed as a running max over
   sliding windows. Overlaps shorter than `kmer` score 0.
 
@@ -183,11 +197,13 @@ One level (segment or fragment) and its conditions and candidates. Fields: `seq`
 - `add_condition(condition)`: enforces a unique name (several conditions may share a scorer), then
   calls `condition.bind(maps.view(scorer, grid))`.
 - `get_condition(name)`: looks up a condition by name.
-- `feasible_mask()`: AND of `feasible()` over all constraints.
-- `_thin(mask)`: drops the neighbours of each feasible cell within `min_step` (Manhattan
-  distance in start/end).
-- `generate_candidates(min_edge_len)`: feasible mask & `grid.edge_mask`, then `_thin`,
-  then `grid.overlap`, then `Candidates`, then merges in `manual` (manual overlaps win).
+- `feasible_penalties()`: sum of `feasible()` over all constraints (`inf` = forbidden).
+- `_thin(penalties)`: greedily, smallest penalty first, keeps a feasible cell and sets
+  its neighbours within `min_step` (Manhattan distance in start/end, both directions) to
+  `inf`.
+- `generate_candidates(min_edge_len)`: feasible penalties, `inf` outside
+  `grid.edge_mask`, then `_thin`, then `grid.overlap`, then `Candidates` with the
+  penalties as `extra_penalty`, then merges in `manual` (manual overlaps win).
   Records `_generated`.
 - `_conditions_state()`: tuple of `(condition, version)` pairs, used for staleness.
 - `candidates_stale`: true if there are no candidates, or if they were generated and
@@ -239,8 +255,9 @@ Fields: `grid` (the union of both levels' overlap ranges), `maps` (a shared
 - `chop()`: runs `gap_check` on both levels, then `_shortest_path` over the segment
   candidates. Raises `NoAssemblyError(_why_stuck(...))` if there's no path; otherwise
   `_walk_back` gives the `Assembly`.
-- `_shortest_path(starts, ends, min_len, max_len)` *(static)*: one forward DAG sweep
-  with unit edge weights. Each vertex relaxes a window found by `searchsorted`, keeping
+- `_shortest_path(starts, ends, min_len, max_len, extra_penalty)` *(static)*: one
+  forward DAG sweep; edge `i → j` weighs `1 + extra_penalty[j]`, so the cost is segments
+  plus penalties of the overlaps used. Each vertex relaxes a window found by `searchsorted`, keeping
   only lengths within the bounds. Returns `(weights, back)`.
 - `_walk_back(back)` *(static)*: rebuilds the path from the back-pointers.
 - `_why_stuck(starts, ends, weights)`: explains how far the chain got and how big the
@@ -263,7 +280,7 @@ Fragmentor
         │                 └─ KmerHomology ─┬─ BGHomology ── BackgroundKmers (from fasta/npz)
         │                                  └─ SelfHomology ── BackgroundKmers.from_seqs
         ├─ manual: Candidates (hand-added, merged into every generation)
-        └─ candidates: Candidates  ← generate_candidates (feasible_mask & edge_mask → _thin)
+        └─ candidates: Candidates  ← generate_candidates (feasible_penalties, edge_mask → _thin)
 ```
 
 ### Key flows
@@ -280,5 +297,6 @@ Fragmentor
   segment candidates → `_walk_back` → `Assembly`. Failures raise `GapError` or
   `NoAssemblyError`.
 - **Fragments today:** the fragment level is generated and gap-checked, but `chop` only
-  builds the path over the segment candidates. `objectives` and `extra_penalty` are
-  stored but not yet used in the path (see the TODO in `_thin`).
+  builds the path over the segment candidates. `extra_penalty` (relaxed constraints and
+  hand-added overlaps) is added to the path cost; `objectives` are stored but not yet
+  used (see the TODO in `_thin`).

@@ -152,20 +152,32 @@ class OverlapGrid:
 
 @dataclass
 class OverlapMap:
+    """One scorer's scores over a grid.
+
+    values holds the stored scores, float16 in [0, 1] with 0 the best end (see
+    AbstractScorer.build_map), and NaN for cells that cannot be used. A stored score s
+    stands for the real value offset + scale * s in the scorer's own units; scale is
+    negative when higher real values are better, and offset carries any negative range.
+    The real values are computed in float64, so they cannot overflow float16.
+    """
     grid: OverlapGrid
     values: np.ndarray
-    multiplier: float = 1.0
+    scale: float = 1.0
+    offset: float = 0.0
 
-    def get_cell(self, i: int, j: int) -> np.float16:
+    def _real(self, stored):
+        return self.offset + self.scale * np.asarray(stored, dtype=np.float64)
+
+    def get_cell(self, i: int, j: int) -> np.float64:
         self.grid.check_cell(i, j)
-        return self.values[i, j] * self.multiplier
+        return self._real(self.values[i, j])[()]
 
-    def get_overlap(self, start: int, end: int) -> np.float16:
+    def get_overlap(self, start: int, end: int) -> np.float64:
         i, j = self.grid.cell(start, end)
-        return self.values[i, j] * self.multiplier
+        return self._real(self.values[i, j])[()]
 
     def get_values(self) -> np.ndarray:
-        return self.values * self.multiplier
+        return self._real(self.values)
 
     def view(self, grid: OverlapGrid) -> "OverlapMap":
         """This map seen through grid, a sub-grid of its own (see OverlapGrid.slices).
@@ -173,7 +185,7 @@ class OverlapMap:
         The values are a numpy view, not a copy: the two maps share their memory.
         """
         rows, cols = self.grid.slices(grid)
-        return OverlapMap(grid, self.values[rows, cols], self.multiplier)
+        return OverlapMap(grid, self.values[rows, cols], self.scale, self.offset)
 
 @dataclass(frozen=True)
 class AbstractScorer(ABC):
@@ -187,23 +199,27 @@ class AbstractScorer(ABC):
     def build_map(self, seq: str, grid: OverlapGrid) -> OverlapMap:
         """Score every overlap of grid.
 
-        Scores run from 0 to 1 (times the multiplier _fill returns). 0 is always the best
-        score, 1 is the worst.
+        Stored scores run from 0 to 1, and 0 is the best end whenever the scorer has one.
+        A two-sided quantity, checked against a window, has no best end: there 0 is the
+        low end and scale is positive. offset and scale, returned by _fill, turn the
+        stored scores into real values (see OverlapMap).
 
-        Cells whose overlap runs past the end of the sequence always score 1, whatever
-        _fill wrote there, so nothing downstream has to filter them out.
+        Cells that cannot be used are NaN: the ones whose overlap runs past the end of the
+        sequence, whatever _fill wrote there, and any that _fill left unwritten. NaN fails
+        every threshold comparison, so such cells are infeasible for any condition.
         """
         if len(seq) != grid.seq_len:
             raise ValueError(f"Sequence is {len(seq)} long but the grid is for {grid.seq_len}")
-        values = np.full(grid.shape, 1.0, dtype=np.float16)
-        multiplier = self._fill(seq, grid, values)
-        values[grid.ends > grid.seq_len] = 1.0
-        return OverlapMap(grid, values, multiplier)
+        values = np.full(grid.shape, np.nan, dtype=np.float16)
+        offset, scale = self._fill(seq, grid, values)
+        values[grid.ends > grid.seq_len] = np.nan
+        return OverlapMap(grid, values, float(scale), float(offset))
 
     @abstractmethod
-    def _fill(self, seq: str, grid: OverlapGrid, values: np.ndarray) -> float:
-        """Write the scores into values (shaped like grid, pre-filled with 1) and return
-        the multiplier that turns them back into the scorer's own units."""
+    def _fill(self, seq: str, grid: OverlapGrid, values: np.ndarray) -> tuple[float, float]:
+        """Write the stored scores into values (shaped like grid, pre-filled with NaN) and
+        return (offset, scale), which turn them into the scorer's own units:
+        real = offset + scale * stored. A cell left unwritten stays NaN, unusable."""
 
 
 THRESHOLDS = ("min_val", "max_val", "opt_val", "start", "end")
@@ -251,6 +267,9 @@ class Condition:
     start: int | None = None
     end: int | None = None
     name: str | None = None
+    # added only through add_relaxed, which bumps version; a tuple, so it cannot be changed
+    # in place, and kept sorted by extra_penalty, largest first
+    relaxed: tuple = field(default=(), init=False, repr=False)
     map: OverlapMap | None = field(default=None, init=False, repr=False)
     version: int = field(default=0, init=False, repr=False)
 
@@ -267,9 +286,21 @@ class Condition:
         if min_val is None and max_val is None and opt_val is None:
             raise ValueError("Condition has no thresholds or objectives set: it is neither a constraint "
                              "nor an objective")
-
+        Condition._check_bounds(min_val, max_val, "Condition")
+        if opt_val is not None and np.isnan(opt_val):
+            raise ValueError("Condition opt_val is NaN")
         if start is not None and end is not None and start >= end:
             raise ValueError(f"Condition start {start} must be less than end {end}")
+
+    @staticmethod
+    def _check_bounds(min_val, max_val, what: str) -> None:
+        """Refuse a NaN bound, which would silently fail every comparison, and a floor
+        above the ceiling, which nothing can satisfy."""
+        for name, value in (("min_val", min_val), ("max_val", max_val)):
+            if value is not None and np.isnan(value):
+                raise ValueError(f"{what} {name} is NaN")
+        if min_val is not None and max_val is not None and min_val > max_val:
+            raise ValueError(f"{what} min_val {min_val} is above max_val {max_val}")
 
     @staticmethod
     def _fit_area(start, end, grid: OverlapGrid | None) -> tuple[int | None, int | None]:
@@ -313,6 +344,8 @@ class Condition:
             self.update(**{name: value})
         elif name == "scorer" and self.map is not None:
             raise AttributeError("The scorer of a bound condition cannot be changed: add a new Condition")
+        elif name == "relaxed":
+            raise AttributeError("Relaxed conditions cannot be assigned: use add_relaxed")
         else:
             super().__setattr__(name, value)
 
@@ -345,6 +378,18 @@ class Condition:
         return self.name if self.name is not None else type(self.scorer).__name__
 
     @property
+    def lower(self) -> float:
+        """min_val, or -inf when it is not set: a floor that can always be compared against.
+
+        Read-only and computed on each access, so it always follows min_val."""
+        return -np.inf if self.min_val is None else float(self.min_val)
+
+    @property
+    def upper(self) -> float:
+        """max_val, or +inf when it is not set (see lower)."""
+        return np.inf if self.max_val is None else float(self.max_val)
+
+    @property
     def is_constraint(self) -> bool:
         return self.min_val is not None or self.max_val is not None
 
@@ -368,24 +413,75 @@ class Condition:
         self.map = overlap_map
 
     def feasible(self) -> np.ndarray:
-        """Boolean mask of the overlaps that satisfy this condition as a constraint.
+        """Penalty of each overlap under this condition as a constraint.
 
-        min_val is a floor, max_val a ceiling; a condition with neither set is not a
-        constraint and admits everything. A NaN score fails both comparisons, so it is
-        infeasible without a separate check for it.
+        0 where the overlap passes, i.e. lies within [lower, upper], or lies outside the
+        condition's area; otherwise the smallest extra_penalty among the relaxed versions
+        it passes; inf where it passes none. An overlap passes only if it satisfies both
+        bounds at once. A condition with neither bound set is not a constraint and admits
+        everything. A NaN score fails every comparison, so it is never admitted by the
+        thresholds (only by lying outside the area).
         """
         if self.map is None:
             raise ValueError("Condition must be bound to a map before feasible")
         values = self.map.get_values()
+        if not self.is_constraint:
+            return np.zeros(values.shape)
         outside = ~self.grid.edge_mask(self.grid.min_len, self.start, self.end)
-        if self.min_val is None and self.max_val is None:
-            return np.ones(values.shape, dtype=bool) | outside
-        if self.min_val is None:
-            return (values <= self.max_val) | outside
-        ok = values >= self.min_val
-        if self.max_val is not None:
-            ok &= values <= self.max_val
-        return ok | outside
+        penalties = np.full(values.shape, np.inf)
+
+        # sorted largest penalty first, so where several pass the smallest is written last
+        for r_min, r_max, r_penalty, r_start, r_end in self.relaxed:
+            # a relaxed bound left None follows the main one, as it is now
+            r_lower = self.lower if r_min is None else r_min
+            r_upper = self.upper if r_max is None else r_max
+            r_inside = self.grid.edge_mask(self.grid.min_len, r_start, r_end)
+            penalties[(values >= r_lower) & (values <= r_upper) & r_inside] = r_penalty
+
+        penalties[((values >= self.lower) & (values <= self.upper)) | outside] = 0.0
+        return penalties
+
+    def add_relaxed(self, min_val: float | None = None, max_val: float | None = None, extra_penalty: float = 0.0, start: int | None = None, end: int | None = None) -> None:
+        """Add a relaxed version of this condition, with looser thresholds, possibly over
+        only part of its area. The relaxed version is checked only where the main one
+        fails: an overlap it admits gets extra_penalty instead of being forbidden, and
+        that penalty is added to the cost of any assembly using it (see Fragmentor.chop).
+        Where several relaxed versions admit an overlap, the smallest penalty applies.
+
+        The new thresholds are checked against the main ones: min_val cannot be higher,
+        nor max_val lower. The area must lie within the main one: outside the main area
+        everything is admitted already, so a relaxed version can only loosen the rule
+        locally, e.g. across a gap that the main thresholds leave. A threshold left None
+        follows the main one, including through later updates of it; those updates do
+        not check the relaxed versions again. An area side left None takes the main one
+        as it is now.
+        """
+        if self.map is None:
+            raise ValueError("Condition must be bound to a map before adding a relaxed one")
+        if not self.is_constraint:
+            raise ValueError("Only a constraint (min_val and/or max_val set) can be relaxed")
+        start, end = self._fit_area(start, end, self.grid)
+        self._check_bounds(self.lower if min_val is None else min_val,
+                           self.upper if max_val is None else max_val, "Relaxed")
+        if min_val is not None and min_val > self.lower:
+            raise ValueError(f"Relaxed min_val {min_val} is higher than main {self.min_val}")
+        if max_val is not None and max_val < self.upper:
+            raise ValueError(f"Relaxed max_val {max_val} is lower than main {self.max_val}")
+        if start is not None and self.start is not None and start < self.start:
+            raise ValueError(f"Relaxed start {start} is before main {self.start}")
+        if end is not None and self.end is not None and end > self.end:
+            raise ValueError(f"Relaxed end {end} is after main {self.end}")
+        if start is None:
+            start = self.start
+        if end is None:
+            end = self.end
+        if start is not None and end is not None and start >= end:
+            raise ValueError(f"Relaxed start {start} must be less than end {end}")
+        if not extra_penalty >= 0:  # also refuses NaN, which fails every comparison
+            raise ValueError(f"Relaxed extra_penalty {extra_penalty} must be non-negative")
+        relaxed = self.relaxed + ((min_val, max_val, extra_penalty, start, end),)
+        object.__setattr__(self, "relaxed", tuple(sorted(relaxed, key=lambda r: r[2], reverse=True)))
+        object.__setattr__(self, "version", self.version + 1)
 
     # ---- visualization -------------------------------------------------------------
     # matplotlib is an optional dependency (the `plot` extra), so it is imported only
@@ -445,7 +541,11 @@ class Condition:
 
         ## TODO: think about it later. With an area set, rows near its end also take the min
         ## over long overlaps that run past end, which the condition does not check.
-        best = self.map.get_values()[a:b].min(axis=1).astype(np.float64)
+        # NaN cells (past the sequence end) are skipped; a row with no usable overlap at
+        # all comes out NaN and is simply not drawn
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", "All-NaN slice", RuntimeWarning)
+            best = np.nanmin(self.map.get_values()[a:b], axis=1)
 
         ax.scatter(np.arange(a, b), best, s=8, color="tab:blue", label="min score", zorder=3)
         self._plot_area(ax, a, b)
@@ -500,9 +600,9 @@ class MapStore:
 #     def score(self, seq: str) -> np.float16:
 #         return np.float16(len(seq) > self.max_len)
 #
-#     def _fill(self, seq, grid, values) -> float:
+#     def _fill(self, seq, grid, values) -> tuple[float, float]:
 #         values[0, 0] = self.score(seq)
-#         return 1.0
+#         return 0.0, 1.0
 
 @dataclass
 class BackgroundKmers:
@@ -602,7 +702,7 @@ class KmerHomology(AbstractScorer):
     @abstractmethod
     def _kmer_scores(self, seq: str) -> tuple[np.ndarray, float]: ...
 
-    def _fill(self, seq: str, grid: OverlapGrid, values: np.ndarray) -> float:
+    def _fill(self, seq: str, grid: OverlapGrid, values: np.ndarray) -> tuple[float, float]:
         """Worst kmer score over each overlap, as a running max along the length axis.
 
         An overlap shorter than kmer holds no complete kmer, so there is no evidence of
@@ -610,23 +710,25 @@ class KmerHomology(AbstractScorer):
         `kmer - min_len` length columns, which have no window to slide over.
 
         The kmer scores are computed even when no overlap is long enough to need them:
-        the multiplier comes with them, and it belongs to the scorer and the sequence, not
-        to the grid, so a map and any view of a wider map must agree on it.
+        the multiplier (the scale) comes with them, and it belongs to the scorer and the
+        sequence, not to the grid, so a map and any view of a wider map must agree on it.
+        Counts start at 0, so the offset is always 0.
         """
         n_cols = grid.shape[1]
         n_short = min(max(self.kmer - grid.min_len, 0), n_cols)
         values[:, :n_short] = 0.0
         scores, multiplier = self._kmer_scores(seq)
         if n_short == n_cols:  # kmer > max_len: no overlap is long enough to hold one
-            return multiplier
+            return 0.0, multiplier
 
+        # the padding only reaches overlaps past the sequence end, which build_map sets to NaN
         padded = np.concatenate([scores, np.full(grid.max_len - grid.min_len, 1.0, dtype=np.float16)])
         windows = np.lib.stride_tricks.sliding_window_view(padded, grid.max_len - self.kmer + 1)
         accumulated = np.maximum.accumulate(windows, axis=1)
         # column j is the overlap of length min_len + j, whose last kmer starts at
         # offset min_len + j - kmer; the short columns above are the negative ones.
         values[:, n_short:] = accumulated[:, max(grid.min_len - self.kmer, 0):]
-        return multiplier
+        return 0.0, multiplier
 
 @dataclass(frozen=True)
 class BGHomology(KmerHomology):
@@ -676,6 +778,11 @@ class BGHomology(KmerHomology):
 class SelfHomology(KmerHomology):
 
     def _kmer_scores(self, seq: str) -> tuple[np.ndarray, float]:
+        # TODO: cap the repeats (as KmerHomology does with cap <= 2048). Fine for the short
+        # sequences considered so far, but the multiplier is the largest repeat count, so
+        # for long, repetitive sequences it can pass 2048, past which the float16 scores
+        # (about 11 bits) can no longer tell neighbouring counts apart. The real values
+        # are computed in float64, so they no longer overflow.
         repeats = BackgroundKmers.from_seqs([seq], self.kmer).lookup(seq) - 1
         multiplier = float(max(repeats.max(), 1))
         return np.float16(repeats / multiplier), multiplier
@@ -692,7 +799,7 @@ class BoundaryMotif(AbstractScorer):
     """
     motif: str = "GC"
 
-    def _fill(self, seq: str, grid: OverlapGrid, values: np.ndarray) -> float:
+    def _fill(self, seq: str, grid: OverlapGrid, values: np.ndarray) -> tuple[float, float]:
         n_starts = grid.shape[0]
         # the lookahead keeps the match zero-width, so the scan does not skip past an
         # occurrence that starts inside the previous one; group 1 carries the real span.
@@ -707,10 +814,10 @@ class BoundaryMotif(AbstractScorer):
         closes[ends] = True
 
         # clamped only to keep the index in range: the cells whose overlap ends past the
-        # sequence get a meaningless score here, which build_map overwrites with 1.
+        # sequence get a meaningless score here, which build_map overwrites with NaN.
         shuts = closes[np.minimum(grid.ends, grid.seq_len)]
 
         bounded = opens[:, None] & shuts
         values[:] = (~bounded).astype(np.float16)
-        return 1.0
+        return 0.0, 1.0
 

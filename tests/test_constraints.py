@@ -198,10 +198,10 @@ def test_grid_slices_rejects_a_grid_that_does_not_fit(grid, sub, match):
 
 
 def test_overlap_map_view_shares_memory(grid):
-    m = OverlapMap(grid, np.arange(np.prod(grid.shape), dtype=np.float16).reshape(grid.shape), 3.0)
+    m = OverlapMap(grid, np.arange(np.prod(grid.shape), dtype=np.float16).reshape(grid.shape), 3.0, -2.0)
     sub = OverlapGrid(grid.seq_len, 6, 8)
     v = m.view(sub)
-    assert v.grid == sub and v.multiplier == 3.0
+    assert v.grid == sub and v.scale == 3.0 and v.offset == -2.0
     assert np.shares_memory(v.values, m.values)
     assert v.get_overlap(10, 17) == m.get_overlap(10, 17)
 
@@ -222,7 +222,7 @@ class ConstScorer(AbstractScorer):
     def _fill(self, seq, grid, values):
         if self.fill is not None:
             values[:] = self.fill
-        return 1.0
+        return 0.0, 1.0
 
 
 def bound(scorer, seq, grid, **thresholds) -> Condition:
@@ -230,6 +230,11 @@ def bound(scorer, seq, grid, **thresholds) -> Condition:
     c = Condition(scorer, **thresholds)
     c.bind(scorer.build_map(seq, grid))
     return c
+
+
+def admitted(c: Condition) -> np.ndarray:
+    """The overlaps c admits, with or without a penalty."""
+    return np.isfinite(c.feasible())
 
 
 def test_abstract_scorer_cannot_be_instantiated():
@@ -332,12 +337,12 @@ def test_build_map_checks_seq_length(grid):
         ConstScorer().build_map("A" * (grid.seq_len - 1), grid)
 
 
-def test_build_map_defaults_to_worst_score(grid):
+def test_build_map_leaves_unwritten_cells_nan(grid):
     m = ConstScorer().build_map("A" * grid.seq_len, grid)
     assert m.values.dtype == np.float16
     assert m.values.shape == grid.shape
     assert m.grid == grid
-    assert np.all(m.values == 1.0)
+    assert np.all(np.isnan(m.values))
 
 
 def test_bind_rejects_a_second_map(grid):
@@ -346,11 +351,11 @@ def test_bind_rejects_a_second_map(grid):
         c.bind(ConstScorer().build_map("A" * grid.seq_len, grid))
 
 
-def test_build_map_scores_overlaps_past_the_end_worst(grid):
+def test_build_map_sets_overlaps_past_the_end_nan(grid):
     values = ConstScorer(fill=0.0).build_map("A" * grid.seq_len, grid).values
     past_end = grid.ends > grid.seq_len
     assert past_end.any() and (~past_end).any()
-    assert np.all(values[past_end] == 1.0)
+    assert np.all(np.isnan(values[past_end]))
     assert np.all(values[~past_end] == 0.0)
 
 
@@ -375,7 +380,7 @@ SMALL_GRID = OverlapGrid(seq_len=3, min_len=2, max_len=4)  # shape (2, 3)
 def test_feasible_thresholds(kwargs, expected):
     c = bound(ConstScorer(), "AAA", SMALL_GRID, **kwargs)
     c.map.values[:] = VALUES  # bypass the past-end rule: this tests the thresholds alone
-    np.testing.assert_array_equal(c.feasible(), np.array(expected, dtype=bool))
+    np.testing.assert_array_equal(c.feasible(), np.where(np.array(expected, dtype=bool), 0.0, np.inf))
 
 
 # --------------------------------------------------------------------------- condition area
@@ -390,7 +395,7 @@ def in_area(grid, start, end):
 @pytest.mark.parametrize("start,end", [(10, 30), (None, 30), (10, None), (0, 50)])
 def test_feasible_admits_everything_outside_the_area(grid, start, end):
     c = bound(ConstScorer(fill=1.0), "A" * grid.seq_len, grid, max_val=0.5, start=start, end=end)
-    np.testing.assert_array_equal(c.feasible(), ~in_area(grid, start, end))
+    np.testing.assert_array_equal(admitted(c), ~in_area(grid, start, end))
 
 
 def test_feasible_applies_the_thresholds_inside_the_area(grid):
@@ -399,14 +404,14 @@ def test_feasible_applies_the_thresholds_inside_the_area(grid):
               start=5, end=40)
     values = c.map.values
     inside = in_area(grid, 5, 40)
-    np.testing.assert_array_equal(c.feasible()[inside], ((values >= 0.2) & (values <= 0.7))[inside])
-    assert c.feasible()[~inside].all()
+    np.testing.assert_array_equal(admitted(c)[inside], ((values >= 0.2) & (values <= 0.7))[inside])
+    assert admitted(c)[~inside].all()
 
 
 def test_area_without_bounds_changes_nothing(grid):
     """No start/end: feasible is exactly the thresholds, past-end cells included."""
     c = bound(ConstScorer(fill=0.0), "A" * grid.seq_len, grid, max_val=0.5)
-    np.testing.assert_array_equal(c.feasible(), grid.ends <= grid.seq_len)
+    np.testing.assert_array_equal(admitted(c), grid.ends <= grid.seq_len)
 
 
 @pytest.mark.parametrize("start,end", [(10, 10), (20, 10)])
@@ -452,7 +457,7 @@ def test_area_shorter_than_any_overlap_warns(grid):
     c = Condition(ConstScorer(fill=1.0), max_val=0.5, start=10, end=10 + grid.min_len - 1)
     with pytest.warns(UserWarning, match="shorter than the shortest overlap"):
         c.bind(ConstScorer(fill=1.0).build_map("A" * grid.seq_len, grid))
-    assert c.feasible().all()
+    assert admitted(c).all()
 
 
 def test_area_changes_bump_the_version():
@@ -611,7 +616,7 @@ def brute_force_kmer_map(scores, grid, kmer):
         for j in range(grid.shape[1]):
             s, e = grid.overlap(i, j)
             if e > grid.seq_len:
-                out[i, j] = 1.0                      # runs past the end of the sequence
+                out[i, j] = np.nan                   # runs past the end of the sequence
             elif e - s < kmer:
                 out[i, j] = 0.0                      # holds no complete kmer: nothing against it
             else:
@@ -647,8 +652,8 @@ def test_kmer_homology_all_overlaps_shorter_than_kmer_pass():
     m = StubHomology(kmer=20, scores=np.ones(21)).build_map("A" * 40, grid)
     inside = grid.ends <= grid.seq_len
     assert np.all(m.values[inside] == 0.0)
-    assert np.all(m.values[~inside] == 1.0)
-    assert m.multiplier == 1.0
+    assert np.all(np.isnan(m.values[~inside]))
+    assert m.offset == 0.0 and m.scale == 1.0
 
 
 def write_fasta(path, seqs):
@@ -701,7 +706,7 @@ def test_bg_homology_from_npz_builds_map(tmp_path):
     scores, multiplier = c._kmer_scores(seq)
     expected = brute_force_kmer_map(scores, grid, 4)
     np.testing.assert_array_equal(m.values, expected)
-    assert m.multiplier == multiplier == c.cap
+    assert m.offset == 0.0 and m.scale == multiplier == c.cap
 
 
 def test_bg_homology_equality_ignores_the_loaded_background(tmp_path):
@@ -775,7 +780,9 @@ def brute_force_motif_map(seq, grid, motif):
     for i in range(grid.shape[0]):
         for j in range(grid.shape[1]):
             s, e = grid.overlap(i, j)
-            if e <= grid.seq_len and s in opens and e in closes:
+            if e > grid.seq_len:
+                out[i, j] = np.nan
+            elif s in opens and e in closes:
                 out[i, j] = 0.0
     return out
 
@@ -787,7 +794,7 @@ def test_boundary_motif_non_overlapping_occurrences():
     expected = brute_force_motif_map(seq, grid, "GC")
     np.testing.assert_array_equal(c.map.values, expected)
     assert c.map.get_overlap(2, 10) == 0.0   # GCAAAAGC
-    assert c.feasible().sum() == (expected == 0).sum()
+    assert admitted(c).sum() == (expected == 0).sum()
 
 
 def test_boundary_motif_regex():
@@ -806,12 +813,12 @@ def test_boundary_motif_overlapping_occurrences():
     np.testing.assert_array_equal(m.values, expected)
 
 
-def test_boundary_motif_past_end_scores_worst_when_sequence_ends_on_motif():
+def test_boundary_motif_past_end_is_nan_when_sequence_ends_on_motif():
     seq = "ACGTACGTAA"
     grid = OverlapGrid(len(seq), 2, 4)
     m = BoundaryMotif(motif="A").build_map(seq, grid)
     np.testing.assert_array_equal(m.values, brute_force_motif_map(seq, grid, "A"))
-    assert list(m.values[8]) == [0.0, 1.0, 1.0]   # only (8, 10) is a real overlap
+    assert m.values[8, 0] == 0.0 and np.isnan(m.values[8, 1:]).all()   # only (8, 10) is a real overlap
 
 
 # --------------------------------------------------------------------------- plotting
@@ -938,7 +945,7 @@ def test_view_of_a_union_map_equals_a_standalone_map(tmp_path, min_len, max_len)
         own = scorer.build_map(seq, sub)
         view = scorer.build_map(seq, union).view(sub)
         np.testing.assert_array_equal(view.values, own.values, err_msg=type(scorer).__name__)
-        assert view.multiplier == own.multiplier
+        assert (view.offset, view.scale) == (own.offset, own.scale)
 
 
 def test_map_store_builds_each_scorer_once(grid):
@@ -974,3 +981,76 @@ def test_map_store_maps_are_read_only(grid):
 def test_map_store_checks_seq_length(grid):
     with pytest.raises(ValueError, match="long but the grid"):
         MapStore("A" * (grid.seq_len + 1), grid)
+
+
+# --------------------------------------------------------------------------- relaxed constraints
+
+
+def test_relaxed_versions_give_the_smallest_penalty_that_passes():
+    c = bound(ConstScorer(), "AAA", SMALL_GRID, max_val=0.25)
+    c.map.values[:] = VALUES
+    c.add_relaxed(max_val=0.75, extra_penalty=2.0)
+    c.add_relaxed(max_val=1.0, extra_penalty=5.0)  # added after, still loses where both pass
+    np.testing.assert_array_equal(c.feasible(), [[0, 0, 2], [2, 5, np.inf]])
+
+
+def test_relaxed_bound_left_none_follows_the_main_one():
+    c = bound(ConstScorer(), "AAA", SMALL_GRID, min_val=0.25, max_val=0.5)
+    c.map.values[:] = VALUES
+    c.add_relaxed(min_val=0.0, extra_penalty=1.0)  # max_val follows the main 0.5
+    np.testing.assert_array_equal(c.feasible(), [[1, 0, 0], [np.inf, np.inf, np.inf]])
+    c.max_val = 0.75  # and keeps following it
+    np.testing.assert_array_equal(c.feasible(), [[1, 0, 0], [0, np.inf, np.inf]])
+
+
+def test_relaxed_version_can_apply_to_part_of_the_area(grid):
+    c = bound(ConstScorer(fill=1.0), "A" * grid.seq_len, grid, max_val=0.5)
+    c.add_relaxed(max_val=1.0, extra_penalty=3.0, start=10, end=30)
+    np.testing.assert_array_equal(c.feasible(), np.where(in_area(grid, 10, 30), 3.0, np.inf))
+
+
+def test_relaxed_area_defaults_to_the_main_one(grid):
+    c = bound(ConstScorer(fill=1.0), "A" * grid.seq_len, grid, max_val=0.5, start=10, end=30)
+    c.add_relaxed(max_val=1.0, extra_penalty=3.0)
+    np.testing.assert_array_equal(c.feasible(), np.where(in_area(grid, 10, 30), 3.0, 0.0))
+
+
+@pytest.mark.parametrize("area,match", [({"start": 5}, "before main"), ({"end": 45}, "after main"),
+                                        ({"start": 20, "end": 20}, "outside the sequence|less than end")])
+def test_relaxed_area_must_lie_within_the_main_one(grid, area, match):
+    c = bound(ConstScorer(fill=1.0), "A" * grid.seq_len, grid, max_val=0.5, start=10, end=40)
+    with pytest.raises(ValueError, match=match):
+        c.add_relaxed(max_val=1.0, extra_penalty=1.0, **area)
+
+
+@pytest.mark.parametrize(
+    "main,relaxed,match",
+    [
+        ({"max_val": 0.5}, {"max_val": 0.4}, "lower than main"),
+        ({"min_val": 0.5}, {"min_val": 0.6}, "higher than main"),
+        ({"max_val": 0.5}, {"min_val": 0.1}, "higher than main"),  # a floor where there was none
+        ({"max_val": 0.5}, {"max_val": np.nan}, "NaN"),
+        ({"min_val": 0.5}, {"min_val": 0.2, "max_val": 0.1}, "above max_val"),
+        ({"max_val": 0.5}, {"max_val": 1.0, "extra_penalty": -1.0}, "non-negative"),
+        ({"max_val": 0.5}, {"max_val": 1.0, "extra_penalty": np.nan}, "non-negative"),
+        ({"opt_val": 0.0}, {"max_val": 1.0}, "Only a constraint"),
+    ],
+)
+def test_add_relaxed_rejects_bad_versions_and_changes_nothing(grid, main, relaxed, match):
+    c = bound(ConstScorer(fill=0.0), "A" * grid.seq_len, grid, **main)
+    with pytest.raises(ValueError, match=match):
+        c.add_relaxed(**relaxed)
+    assert c.relaxed == () and c.version == 0
+
+
+def test_add_relaxed_needs_a_map():
+    with pytest.raises(ValueError, match="bound to a map"):
+        Condition(ConstScorer(), max_val=0.5).add_relaxed(max_val=1.0)
+
+
+def test_add_relaxed_bumps_the_version_and_relaxed_cannot_be_assigned(grid):
+    c = bound(ConstScorer(fill=0.0), "A" * grid.seq_len, grid, max_val=0.5)
+    c.add_relaxed(max_val=1.0, extra_penalty=1.0)
+    assert c.version == 1 and len(c.relaxed) == 1
+    with pytest.raises(AttributeError, match="add_relaxed"):
+        c.relaxed = ()
