@@ -1,8 +1,9 @@
-# Code map: `fragmentor.py` and `constraints.py`
+# Code map: `fragmentor.py`, `constraints.py` and `explorer.py`
 
 A reference for the classes, methods and helpers in
-[`choppy/fragmentor.py`](choppy/fragmentor.py) and [`choppy/constraints.py`](choppy/constraints.py),
-private (`_`-prefixed) members included, followed by how the pieces connect.
+[`choppy/fragmentor.py`](choppy/fragmentor.py), [`choppy/constraints.py`](choppy/constraints.py)
+and [`choppy/explorer.py`](choppy/explorer.py), private (`_`-prefixed) members included,
+followed by how the pieces connect.
 
 ---
 
@@ -34,8 +35,11 @@ Converts between overlap coordinates and map cells. Cell `(i, j)` is the overlap
   can be written as one vectorised expression.
 - `slices(sub)`: the row and column slices of this grid that hold a narrower sub-grid.
   This is what lets the two levels share maps.
-- `edge_mask(min_edge_len)`: drops overlaps too close to either edge for a
-  minimum-length segment or fragment to fit.
+- `edge_mask(min_edge_len, start, end)`: drops overlaps too close to either edge for a
+  minimum-length segment or fragment to fit, and (with `start`/`end`) those not wholly
+  inside an area.
+- `rows_inside(start, end)`: the overlap starts `[first, last]` with at least one overlap
+  wholly inside `[start, end)`, or `None`. Used by `Condition.area_rows` and the explorer.
 
 ### `OverlapMap` (dataclass)
 
@@ -61,8 +65,9 @@ hashable, so equal scorers share one map.
 
 ### `Condition` (dataclass, `eq=False`)
 
-A scorer plus thresholds. Fields: `scorer`, `min_val`, `max_val`, `opt_val`, `name`,
-`map` (set by `bind`), `version`.
+A scorer plus thresholds. Fields: `scorer`, `min_val`, `max_val`, `opt_val`, `start` /
+`end` (the area it applies to), `name`, `relaxed` (a tuple of `Relaxed`), `map` (set by
+`bind`), `version`.
 
 - `__post_init__`: validates the thresholds, then sets `version` on the instance. That
   marks the end of construction.
@@ -70,8 +75,9 @@ A scorer plus thresholds. Fields: `scorer`, `min_val`, `max_val`, `opt_val`, `na
   threshold, and `min_val <= max_val` (via `_check_bounds`, shared with `add_relaxed`).
 - `__setattr__`: routes assignments to threshold fields through `update`, and blocks
   swapping `scorer` once the condition is bound.
-- `update(min_val, max_val, opt_val)`: changes thresholds atomically and bumps `version`
-  only if a value actually changed. `Overlaps` uses `version` to detect stale candidates.
+- `update(min_val, max_val, opt_val, start, end)`: changes thresholds and the area
+  atomically and bumps `version` only if a value actually changed. `Overlaps` uses
+  `version` to detect stale candidates.
 - `grid`: the bound map's grid.
 - `label`: `name`, or the scorer's class name if there's no name.
 - `lower` / `upper`: read-only views of `min_val` / `max_val` that give `-inf` / `+inf`
@@ -92,7 +98,11 @@ A scorer plus thresholds. Fields: `scorer`, `min_val`, `max_val`, `opt_val`, `na
   when `None`); `KeyError` for an unknown id. Bumps `version`. Editing = remove + add.
 - `_plot_axes(ax)`: uses the given axes or creates new ones.
 - `_plot_thresholds(ax)`: draws horizontal threshold lines.
-- `plot_rows(a, b, ax)`: scatter of the minimum score per overlap start.
+- `area_rows()`: the overlap starts the area applies to (`OverlapGrid.rows_inside`), or
+  `None` without an area. `_plot_area(ax, a, b)` shades them.
+- `row_minima(a, b)`: the minimum score per overlap start, in the scorer's units (NaN for a
+  start with no usable overlap). What `plot_rows` and the explorer draw.
+- `plot_rows(a, b, ax)`: scatter of `row_minima`.
 
 ### `MapStore`
 
@@ -175,9 +185,13 @@ read-only. They always include the sentinels `(0, 0)` and `(seq_len, seq_len)`.
 - `__init__(seq_len, starts, ends, extra_penalty)`: sets up the sentinels, then calls
   `add`.
 - `_freeze(arr)` *(static)*: makes an array read-only.
+- `_pairs(starts, ends)`: checks and converts the input of `add` and `remove` (real
+  overlaps only, so never a sentinel). `_keys(starts, ends)`: one int per pair.
 - `add(starts, ends, extra_penalty, skip_duplicates)`: validates, concatenates,
   lexsorts, and removes duplicate `(start, end)` pairs. It keeps the oldest one, or the
   newest when `skip_duplicates=False`.
+- `remove(starts, ends, missing_ok)`: drops those pairs; an absent one raises `KeyError`
+  (nothing removed) unless `missing_ok`.
 - `__len__`: count including the sentinels.
 - `n_overlaps`: count of real overlaps (without the sentinels).
 - `__iter__`: `(start, end)` pairs as plain ints.
@@ -188,12 +202,15 @@ read-only. They always include the sentinels `(0, 0)` and `(seq_len, seq_len)`.
 One level (segment or fragment) and its conditions and candidates. Fields: `seq`,
 `min_len`, `max_len`, `min_step`, `conditions`, `candidates`, `maps` (a `MapStore`),
 `grid` (an `OverlapGrid`), `manual` (a `Candidates` of hand-added overlaps), and
-`_generated`, which holds the last generated candidates and the
-`(condition, version)` state they were built from.
+`_generated`, a `_Generation` named tuple: the last generated `candidates`, the `state`
+they were built from, and the generation's `own` candidates before the manual merge.
 
 - `__post_init__`: builds its own `grid` and an empty `manual`. Uses the given `maps`
   (after checking that the sequence matches and the grid fits, via `grid.slices`) or
-  creates its own `MapStore`. `min_step=1` becomes `None`.
+  creates its own `MapStore`.
+- `__setattr__` / `_check_min_step(min_step)` *(static)*: every assignment of `min_step`,
+  in `__init__` too, is checked: `None` or a positive int, `1` stored as `None` (nothing to
+  thin). So `min_step` can be changed at any time.
 - `shape`: the grid's shape.
 - `constraints` / `objectives`: the conditions filtered by `is_constraint` /
   `is_objective`.
@@ -206,13 +223,19 @@ One level (segment or fragment) and its conditions and candidates. Fields: `seq`
   `inf`.
 - `generate_candidates(min_edge_len)`: feasible penalties, `inf` outside
   `grid.edge_mask`, then `_thin`, then `grid.overlap`, then `Candidates` with the
-  penalties as `extra_penalty`, then merges in `manual` (manual overlaps win).
-  Records `_generated`.
-- `_conditions_state()`: tuple of `(condition, version)` pairs, used for staleness.
+  penalties as `extra_penalty` (the generation's own), then `_with_manual` merges in
+  `manual` (manual overlaps win). Records `_generated`.
+- `_with_manual(own)`: a copy of `own` with `manual` merged in (arrays shared until `add`).
+- `_generation_state()`: `min_step` and the `(condition, version)` pairs, used for staleness.
 - `candidates_stale`: true if there are no candidates, or if they were generated and
-  the conditions have changed since. Candidates assigned directly are never stale.
+  the conditions or `min_step` have changed since. Candidates assigned directly are never
+  stale.
 - `add_candidates(starts, ends, extra_penalty)`: adds to `manual` and to the current
   `candidates`.
+- `remove_candidates(starts, ends)`: drops hand-added overlaps from `manual` (`KeyError`
+  for any other) and from the current candidates, which are rebuilt from the generation's
+  own plus the remaining manual ones, so a generated candidate a manual one had replaced
+  comes back. Directly assigned candidates just lose those entries.
 - `_require_candidates()`: returns `candidates` or raises.
 - `_gaps()`: `(opens, closes)` per split. Each open is `start_i`; each close is a
   suffix-minimum of the ends.
@@ -230,7 +253,8 @@ The result. Fields: `segments`, `overlaps`. `__len__` gives the number of segmen
 ### `Fragmentor` (dataclass)
 
 The top-level API that owns both levels. Init params: `seq`, the segment overlap and
-segment lengths, optional fragment overlap and fragment lengths, and `min_step`.
+segment lengths, optional fragment overlap and fragment lengths, and `min_step` (what both
+levels start with; each level's `min_step` can be changed on its own afterwards).
 Fields: `grid` (the union of both levels' overlap ranges), `maps` (a shared
 `MapStore`), `segment_overlaps` and `fragment_overlaps` (both `Overlaps`),
 `use_fragments`, `seq_len`.
@@ -254,7 +278,10 @@ Fields: `grid` (the union of both levels' overlap ranges), `maps` (a shared
   (`plot_gap_lengths` makes sure the candidates are current first).
 - `gap_check(fragment, min_gap_len)`: uses `get_gapped_regions` with threshold
   `max_len + 1` (or `min_gap_len`) and raises `GapError` with the gaps.
-- `add_candidates(..., fragment)`: delegates to the level.
+- `add_candidates(..., fragment)` / `remove_candidates(..., fragment)`: delegate to the
+  level.
+- `explore(fragment, show, a, b, row_height)`: the interactive explorer of the level, a
+  `LevelExplorer` (imported lazily: it needs the `gui` extra).
 - `chop()`: runs `gap_check` on both levels, then `_shortest_path` over the segment
   candidates. Raises `NoAssemblyError(_why_stuck(...))` if there's no path; otherwise
   `_walk_back` gives the `Assembly`.
@@ -265,6 +292,50 @@ Fields: `grid` (the union of both levels' overlap ranges), `maps` (a shared
 - `_walk_back(back)` *(static)*: rebuilds the path from the back-pointers.
 - `_why_stuck(starts, ends, weights)`: explains how far the chain got and how big the
   gap after that is.
+
+## `choppy/explorer.py`
+
+The notebook explorer behind `Fragmentor.explore`: ipywidgets around one plotly
+`FigureWidget`, editing the live objects. Needs the `gui` extra (ipywidgets, plotly,
+anywidget); importing the module without it raises an `ImportError` naming the extra.
+
+### Helpers
+
+| Name | What it does |
+|---|---|
+| `parse_value(text, kind)` | A field's text as a value: `""`/`"none"` → `None`, else a float or a whole int; `ValueError` otherwise. |
+| `format_value(value)` | The reverse, for showing stored values (`None` → `""`). |
+| `coverage(starts, ends)` | The union of `[start, end)` intervals as runs (starts, ends, counts): a candidate lane's thick strokes. |
+| `relaxed_rows(condition, r)` | The overlap starts where relaxed version `r` can matter: its area within the condition's (`rows_inside`). |
+| `describe_relaxed(r)` | One line for a relaxed version: id, bounds it sets, penalty, area. |
+| `_attempt(action)` | Runs an edit, catching what a refused one raises and recording warnings. |
+| `_Geometry` | Pixel layout of the blocks: each condition gets `row_height` px (title strip, score panel, gap, lanes, tick space), so the fixed-height panels stay level with them. |
+| `_axes(k)` / `_key` / `_legend(k)` / `_block_layout` | Axis and legend names of block `k`, and its layout (x axes matched to the first). |
+
+### `LevelExplorer`
+
+`LevelExplorer(level, lengths, name, show, a, b, row_height)`. `lengths` is the level's
+(min_len, max_len) of segments or fragments: `min_len` for `generate_candidates`, `max_len`
+for the gaps. It displays as its `widget` through `_repr_mimebundle_`.
+
+- One figure, with a block per ticked condition. Each block has a score trace (`row_minima`,
+  WebGL, cached per condition), light traces (threshold lines and relaxed bounds over
+  `relaxed_rows`, each with an `#id` label) and lane traces (`pass` / `relaxed` /
+  `manual` runs, plus gap hover targets). The shapes are the area washes and the gap washes
+  from `get_gapped_regions(max_len + 1)`; the annotations are the block titles and a
+  stale / no-candidates note. Each trace carries `meta = {block, kind}`, so `_redraw_block`
+  and `_redraw_candidates` replace only what changed. `_rebuild` keeps the current zoom.
+- `_ConditionPanel`: one per shown condition, fixed at `row_height`. Its fields go through
+  one `Condition.update` call (`_apply_thresholds`); its relaxed section lists the versions
+  with remove buttons and has an add form (`_add_relaxed` / `_remove_relaxed`).
+- Toolbar: `checks` (scrolling checklist, `show_all` / `show_none`), `min_step`
+  (`_on_min_step`), `regenerate` (`_on_regenerate`), the add-candidate fields and
+  `add_candidate` (`_on_add_candidate`), the `manual` list with remove buttons
+  (`_remove_manual`), and Refresh (`refresh()`: re-reads everything after outside changes).
+- `_relaxed_colors(i, c)`: each relaxed version keeps the first free colour slot for as long
+  as it exists; beyond the three slots, versions are muted. Colours are never cycled.
+- `_read_candidates` / `_update_status`: split the candidates into the lanes, find the
+  gaps, and write the status line (counts, gaps with coordinates, staleness).
 
 ---
 
@@ -282,8 +353,14 @@ Fragmentor
         │                 ├─ BoundaryMotif
         │                 └─ KmerHomology ─┬─ BGHomology ── BackgroundKmers (from fasta/npz)
         │                                  └─ SelfHomology ── BackgroundKmers.from_seqs
-        ├─ manual: Candidates (hand-added, merged into every generation)
+        ├─ manual: Candidates (hand-added, merged into every generation; remove_candidates)
         └─ candidates: Candidates  ← generate_candidates (feasible_penalties, edge_mask → _thin)
+
+Fragmentor.explore(fragment) ── LevelExplorer(level, lengths)
+        ├─ reads: conditions (row_minima, thresholds, relaxed, area_rows), candidates,
+        │         manual, candidates_stale, get_gapped_regions
+        └─ edits: Condition.update / add_relaxed / remove_relaxed, Overlaps.min_step,
+                  generate_candidates (button only), add_candidates / remove_candidates
 ```
 
 ### Key flows
@@ -293,8 +370,13 @@ Fragmentor
   `OverlapGrid.slices`. Equal scorers get the same map because scorers are frozen and
   hashed by their parameters.
 - **Staleness:** `Condition.update` and threshold assignments bump `version`.
-  `Overlaps._conditions_state` compares the saved state with the current one, and
-  `Fragmentor._current_candidates` regenerates when they differ.
+  `Overlaps._generation_state` (`min_step` plus the condition versions) is compared with the
+  state saved at generation, and `Fragmentor._current_candidates` regenerates when they
+  differ. Adding or removing hand-made candidates updates the current candidates in
+  place and never makes them stale.
+- **Explorer:** an edit in a panel changes the live condition and redraws its block. The
+  candidates are not regenerated: they show as stale (faded lanes, a note) until Regenerate
+  is pressed, or until `chop` / `gap_check` regenerate them.
 - **Chop pipeline:** `chop` → `gap_check` (on both levels) → `_current_candidates` →
   `generate_candidates` → `_gaps` / `get_gapped_regions` → `_shortest_path` over the
   segment candidates → `_walk_back` → `Assembly`. Failures raise `GapError` or

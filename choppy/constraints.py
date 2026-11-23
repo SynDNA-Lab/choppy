@@ -136,6 +136,18 @@ class OverlapGrid:
         offset = sub.min_len - self.min_len
         return slice(0, sub.shape[0]), slice(offset, offset + sub.shape[1])
 
+    def rows_inside(self, start: int | None = None, end: int | None = None) -> tuple[int, int] | None:
+        """The overlap starts [first, last] with at least one overlap of this grid lying wholly
+        inside [start, end), or None when no overlap fits there. None leaves that side open.
+
+        The shortest overlap is the last to fit, so last is the start of the overlap of
+        min_len that ends at end.
+        """
+        first = 0 if start is None else max(int(start), 0)
+        hi = self.seq_len if end is None else int(end)
+        last = min(hi - self.min_len, self.shape[0] - 1)
+        return (first, last) if first <= last else None
+
     def edge_mask(self, min_edge_len: int, start: int | None = None, end: int | None = None) -> np.ndarray:
         """
         Cells whose overlap can be used: the ones that leave room for a segment/fragment of
@@ -548,10 +560,7 @@ class Condition:
         None when the condition covers the whole sequence or no overlap fits the area."""
         if self.start is None and self.end is None:
             return None
-        first = 0 if self.start is None else self.start
-        hi = self.grid.seq_len if self.end is None else self.end
-        last = min(hi - self.grid.min_len, self.grid.shape[0] - 1)
-        return (first, last) if first <= last else None
+        return self.grid.rows_inside(self.start, self.end)
 
     def _plot_area(self, ax, a: int, b: int) -> None:
         """Shade the overlap starts in [a, b) that the area applies to."""
@@ -563,12 +572,15 @@ class Condition:
             ax.axvspan(lo - 0.5, hi + 0.5, color="tab:orange", alpha=0.12, zorder=0,
                        label=f"area [{self.start}, {self.end})")
 
-    def plot_rows(self, a: int = 0, b: int = None, ax=None):
-        """Plot, for each overlap start in [a, b), its minimal score across all overlap lengths.
+    def row_minima(self, a: int = 0, b: int | None = None) -> np.ndarray:
+        """For each overlap start in [a, b), its minimal score across all overlap lengths, in
+        the scorer's units: the points plot_rows draws.
 
-        Draws on ax if given, otherwise on a new figure, and returns the axes.
+        NaN cells (past the sequence end) are skipped; a start with no usable overlap at all
+        comes out NaN.
         """
-        ax = self._plot_axes(ax)
+        if self.map is None:
+            raise ValueError("Condition must be bound to a map before its rows can be read")
         n_starts = self.grid.shape[0]
         if b is None:
             b = n_starts
@@ -577,11 +589,20 @@ class Condition:
 
         ## TODO: think about it later. With an area set, rows near its end also take the min
         ## over long overlaps that run past end, which the condition does not check.
-        # NaN cells (past the sequence end) are skipped; a row with no usable overlap at
-        # all comes out NaN and is simply not drawn
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", "All-NaN slice", RuntimeWarning)
-            best = np.nanmin(self.map.get_values()[a:b], axis=1)
+            return np.nanmin(self.map._real(self.map.values[a:b]), axis=1)
+
+    def plot_rows(self, a: int = 0, b: int = None, ax=None):
+        """Plot, for each overlap start in [a, b), its minimal score across all overlap lengths
+        (see row_minima); a start with no usable overlap is simply not drawn.
+
+        Draws on ax if given, otherwise on a new figure, and returns the axes.
+        """
+        ax = self._plot_axes(ax)
+        if b is None:
+            b = self.grid.shape[0]
+        best = self.row_minima(a, b)
 
         ax.scatter(np.arange(a, b), best, s=8, color="tab:blue", label="min score", zorder=3)
         self._plot_area(ax, a, b)

@@ -166,6 +166,21 @@ def test_grid_edge_mask_drops_overlaps_past_end_when_min_edge_exceeds_twice_max_
     assert not np.any(mask & (grid.ends > grid.seq_len))
 
 
+@pytest.mark.parametrize(
+    "start,end",
+    [(None, None), (10, 30), (None, 20), (40, None), (0, 5), (44, 50), (45, 50), (10, 13), (46, None)],
+)
+def test_grid_rows_inside_are_the_rows_holding_an_overlap_inside(grid, start, end):
+    rows = np.flatnonzero(grid.edge_mask(grid.min_len, start, end).any(axis=1))
+    expected = (int(rows[0]), int(rows[-1])) if rows.size else None
+    assert grid.rows_inside(start, end) == expected
+
+
+def test_grid_rows_inside_clips_to_the_grid(grid):
+    assert grid.rows_inside(-5, 8) == (0, 3)
+    assert grid.rows_inside(None, 60) == (0, 45)
+
+
 # --------------------------------------------------------------------------- OverlapMap
 
 
@@ -819,6 +834,48 @@ def test_boundary_motif_past_end_is_nan_when_sequence_ends_on_motif():
     m = BoundaryMotif(motif="A").build_map(seq, grid)
     np.testing.assert_array_equal(m.values, brute_force_motif_map(seq, grid, "A"))
     assert m.values[8, 0] == 0.0 and np.isnan(m.values[8, 1:]).all()   # only (8, 10) is a real overlap
+
+
+# --------------------------------------------------------------------------- row minima
+
+
+@dataclass(frozen=True, eq=False)
+class ScaledScorer(ConstScorer):
+    """A ConstScorer whose stored scores stand for offset + scale * stored."""
+    offset: float = 0.0
+    scale: float = 1.0
+
+    def _fill(self, seq, grid, values):
+        super()._fill(seq, grid, values)
+        return self.offset, self.scale
+
+
+@pytest.mark.parametrize("offset,scale", [(0.0, 1.0), (3.0, 2.0), (1.0, -1.0)])
+def test_row_minima_are_the_row_minima_of_the_real_values(grid, offset, scale):
+    fill = np.random.default_rng(5).random(grid.shape).astype(np.float16)
+    c = bound(ScaledScorer(fill=fill, offset=offset, scale=scale), "A" * grid.seq_len, grid, max_val=9.0)
+    expected = np.nanmin(c.map.get_values(), axis=1)  # the last rows are partly NaN, none wholly
+    np.testing.assert_array_equal(c.row_minima(), expected)
+    np.testing.assert_array_equal(c.row_minima(10, 20), expected[10:20])
+
+
+def test_row_minima_of_a_row_without_usable_overlaps_is_nan(grid):
+    c = bound(ConstScorer(), "A" * grid.seq_len, grid, max_val=0.5)  # every cell left NaN
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # the All-NaN warning is silenced
+        assert np.isnan(c.row_minima(0, 3)).all()
+
+
+def test_row_minima_requires_map():
+    with pytest.raises(ValueError, match="bound to a map"):
+        Condition(ConstScorer(), max_val=0.5).row_minima()
+
+
+@pytest.mark.parametrize("a,b", [(-1, 2), (2, 2), (3, 1), (0, 10**6)])
+def test_row_minima_rejects_bad_range(grid, a, b):
+    c = bound(ConstScorer(), "A" * grid.seq_len, grid, max_val=0.5)
+    with pytest.raises(ValueError, match="Row range"):
+        c.row_minima(a, b)
 
 
 # --------------------------------------------------------------------------- plotting

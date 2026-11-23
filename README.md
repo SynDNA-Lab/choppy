@@ -23,6 +23,9 @@ poetry install
 
 # Or install with pip
 pip install .
+
+# Optional extras: `plot` (matplotlib plots) and `gui` (the notebook explorer, Fragmentor.explore)
+poetry install --all-extras   # or: pip install ".[plot,gui]"
 ```
 
 ## Usage

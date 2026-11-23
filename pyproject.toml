@@ -24,9 +24,13 @@ numpy = "^2.5.4"
 marisa-trie = "^1.4.1"
 biopython = "^1.88"
 matplotlib = {version = "^3.11.2", optional = true}
+ipywidgets = {version = "^8.1.9", optional = true}
+plotly = {version = "^7.1.0", optional = true}
+anywidget = {version = "^0.11.0", optional = true}
 
 [tool.poetry.extras]
 plot = ["matplotlib"]
+gui = ["ipywidgets", "plotly", "anywidget"]  # Fragmentor.explore, the notebook explorer
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

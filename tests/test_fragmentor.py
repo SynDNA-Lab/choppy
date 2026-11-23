@@ -46,6 +46,43 @@ def test_overlaps_min_step_one_disables_thinning():
     assert Overlaps("A" * 30, 4, 7, min_step=1).min_step is None
 
 
+def test_overlaps_min_step_can_be_changed_later():
+    ov = Overlaps("A" * 30, 4, 7, min_step=3)
+    ov.min_step = np.int64(5)
+    assert ov.min_step == 5 and type(ov.min_step) is int
+    ov.min_step = 1  # thins nothing, as at construction
+    assert ov.min_step is None
+    ov.min_step = None
+    assert ov.min_step is None
+
+
+@pytest.mark.parametrize(
+    "bad,error", [(0, ValueError), (-2, ValueError), (2.5, TypeError), (True, TypeError), ("3", TypeError)]
+)
+def test_overlaps_refuses_a_bad_min_step_at_construction_and_later(bad, error):
+    with pytest.raises(error, match="min_step"):
+        Overlaps("A" * 30, 4, 7, min_step=bad)
+    ov = Overlaps("A" * 30, 4, 7, min_step=3)
+    with pytest.raises(error, match="min_step"):
+        ov.min_step = bad
+    assert ov.min_step == 3
+
+
+def test_min_step_changes_make_the_candidates_stale():
+    ov = Overlaps(random_seq(200, seed=3), 10, 15, min_step=2)
+    ov.add_condition(motif("[GC]", max_val=1))  # every overlap passes
+    dense = ov.generate_candidates(40).n_overlaps
+    ov.min_step = 2  # no change
+    assert not ov.candidates_stale
+    ov.min_step = 6
+    assert ov.candidates_stale
+    assert ov.generate_candidates(40).n_overlaps < dense
+    assert not ov.candidates_stale
+    ov.min_step = 1  # no thinning at all, which used to crash _thin
+    assert ov.candidates_stale
+    assert ov.generate_candidates(40).n_overlaps == ov.grid.edge_mask(40).sum()
+
+
 def test_overlaps_without_a_store_gets_its_own():
     ov = Overlaps("A" * 30, 4, 7)
     assert ov.maps.grid == ov.grid and len(ov.maps) == 0
@@ -407,6 +444,17 @@ def test_fragmentor_min_step_one_disables_thinning():
     assert f.segment_overlaps.min_step is None
 
 
+def test_fragmentor_rejects_a_non_int_min_step():
+    with pytest.raises(TypeError, match="min_step"):
+        Fragmentor("ACGT" * 100, **SEG, min_step=2.5)
+
+
+def test_fragmentor_levels_change_their_min_step_separately():
+    f = Fragmentor("ACGT" * 100, **SEG, **FRAG, min_step=3)
+    f.fragment_overlaps.min_step = 5
+    assert (f.segment_overlaps.min_step, f.fragment_overlaps.min_step) == (3, 5)
+
+
 @pytest.mark.parametrize(
     "override,match",
     [
@@ -661,6 +709,31 @@ def test_candidates_rejects_bad_input(args, match):
         Candidates(100, *args)
 
 
+def test_candidates_remove():
+    c = Candidates(100, [10, 20, 30], [16, 26, 36], [0.5, 1.0, 1.5])
+    c.remove([20], [26])
+    assert list(c) == [(0, 0), (10, 16), (30, 36), (100, 100)]
+    assert c.extra_penalty.tolist() == [0.0, 0.5, 1.5, 0.0]
+    assert not any(arr.flags.writeable for arr in (c.starts, c.ends, c.extra_penalty))
+
+
+def test_candidates_remove_of_a_missing_one_raises_and_removes_nothing():
+    c = Candidates(100, [10, 20], [16, 26])
+    with pytest.raises(KeyError, match=r"\(20, 27\)"):
+        c.remove([10, 20], [16, 27])
+    assert list(c)[1:-1] == [(10, 16), (20, 26)]
+    c.remove([10, 20], [16, 27], missing_ok=True)
+    assert list(c)[1:-1] == [(20, 26)]
+
+
+@pytest.mark.parametrize("pair", [(0, 0), (100, 100)])
+def test_candidates_remove_cannot_take_the_sentinels(pair):
+    c = Candidates(100, [10], [16])
+    with pytest.raises(ValueError, match="start < end"):
+        c.remove(*pair)
+    assert len(c) == 3
+
+
 def test_chop_keeps_existing_candidates():
     f = Fragmentor(random_seq(1000), **SEG)
     f.generate_candidates()
@@ -912,6 +985,61 @@ def test_a_later_hand_added_candidate_replaces_an_earlier_one():
     ov.add_candidates(30, 36, extra_penalty=0.9)
     assert ov.manual.extra_penalty.tolist() == [0.0, 0.9, 0.0]
     assert ov.generate_candidates(20).extra_penalty.tolist() == [0.0, 0.9, 0.0]
+
+
+def test_removed_hand_added_candidates_leave_manual_and_the_candidates_for_good():
+    f = Fragmentor(random_seq(1000), **SEG)
+    f.add_condition(const(fill=1.0, max_val=0.5))  # rejects every overlap
+    f.add_candidates(MANUAL_STARTS, MANUAL_ENDS)
+    f.generate_candidates()
+    f.remove_candidates(MANUAL_STARTS[:2], MANUAL_ENDS[:2])
+    ov, kept = f.segment_overlaps, list(zip(MANUAL_STARTS[2:], MANUAL_ENDS[2:]))
+    assert list(ov.manual)[1:-1] == kept
+    assert list(ov.candidates)[1:-1] == kept
+    assert not ov.candidates_stale
+    assert list(f.generate_candidates())[1:-1] == kept
+
+
+def test_removing_a_hand_added_candidate_restores_the_generated_one_it_replaced():
+    ov = Overlaps(random_seq(200, seed=3), 10, 15)
+    ov.add_condition(motif("[GC]", max_val=0))
+    generated = list(ov.generate_candidates(40))
+    s, e = generated[1]
+    ov.add_candidates(s, e, extra_penalty=0.5)
+    ov.add_candidates(30, 36, extra_penalty=0.25)  # 6 bp: not a length the level generates
+    ov.remove_candidates(s, e)
+    assert list(ov.candidates) == sorted(generated + [(30, 36)])
+    penalty = dict(zip(ov.candidates, ov.candidates.extra_penalty.tolist()))
+    assert penalty[(s, e)] == 0.0 and penalty[(30, 36)] == 0.25
+    assert list(ov.manual)[1:-1] == [(30, 36)]
+    assert not ov.candidates_stale
+
+
+def test_remove_candidates_refuses_what_was_not_added_by_hand_and_changes_nothing():
+    ov = Overlaps(random_seq(200, seed=3), 10, 15)
+    ov.add_condition(motif("[GC]", max_val=0))
+    ov.generate_candidates(40)
+    ov.add_candidates(30, 36)
+    s, e = next(p for p in list(ov.candidates)[1:-1] if p != (30, 36))  # a generated one
+    before = list(ov.candidates)
+    with pytest.raises(KeyError, match="No candidate"):
+        ov.remove_candidates([30, s], [36, e])
+    assert list(ov.candidates) == before and list(ov.manual)[1:-1] == [(30, 36)]
+
+
+def test_remove_candidates_before_any_generation_changes_only_manual():
+    ov = Overlaps("A" * 100, 5, 8)
+    ov.add_candidates([30, 50], [36, 56])
+    ov.remove_candidates(30, 36)
+    assert ov.candidates is None and list(ov.manual)[1:-1] == [(50, 56)]
+
+
+def test_remove_candidates_from_directly_assigned_candidates():
+    ov = Overlaps("A" * 100, 5, 8)
+    ov.add_candidates([30, 50], [36, 56])
+    ov.candidates = Candidates(100, [30, 70], [36, 76])  # taken as given: (50, 56) is not in it
+    ov.remove_candidates([30, 50], [36, 56])
+    assert list(ov.candidates)[1:-1] == [(70, 76)] and ov.manual.n_overlaps == 0
 
 
 # ------------------------------------------------------------------ relaxed constraints

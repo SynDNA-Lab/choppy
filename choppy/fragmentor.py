@@ -1,4 +1,6 @@
 from dataclasses import dataclass, field, InitVar
+import copy
+from typing import NamedTuple
 import warnings
 import numpy as np
 from choppy.constraints import Condition, MapStore, OverlapGrid, check_seq
@@ -26,7 +28,8 @@ class Candidates:
 
     Always sorted by start, then end, with no two entries sharing (start, end). The arrays
     are read-only so the order and the alignment of the fields cannot be broken from
-    outside; every change goes through add, which re-sorts all fields together.
+    outside; every change goes through add, which re-sorts all fields together, or remove,
+    which drops entries from all of them at once.
 
     The first and last entries are always the zero-length sentinels (0, 0) and
     (seq_len, seq_len) marking the sequence edges, so the stretches before the first real
@@ -47,14 +50,9 @@ class Candidates:
         arr.flags.writeable = False
         return arr
 
-    def add(self, starts, ends, extra_penalty=0.0, skip_duplicates: bool = True) -> None:
-        """Add candidates, keeping the order by start, then end.
-
-        starts and ends are ints or array-likes of equal length; extra_penalty is a scalar
-        for all of them or one value each. A candidate whose (start, end) is already
-        present is ignored if skip_duplicates, otherwise its penalty replaces the stored
-        one. Repeats within the added batch follow the same rule in the order given.
-        """
+    def _pairs(self, starts, ends) -> tuple[np.ndarray, np.ndarray]:
+        """starts and ends as 1-D int64 arrays of equal length, checked to be real overlaps:
+        0 <= start < end <= seq_len, which the sentinels are not."""
         new_starts = np.atleast_1d(np.asarray(starts, dtype=np.int64))
         new_ends = np.atleast_1d(np.asarray(ends, dtype=np.int64))
         if new_starts.ndim != 1 or new_starts.shape != new_ends.shape:
@@ -64,6 +62,21 @@ class Candidates:
             )
         if np.any(new_starts < 0) or np.any(new_ends <= new_starts) or np.any(new_ends > self.seq_len):
             raise ValueError(f"Every candidate needs 0 <= start < end <= seq_len ({self.seq_len})")
+        return new_starts, new_ends
+
+    def _keys(self, starts: np.ndarray, ends: np.ndarray) -> np.ndarray:
+        """One int per (start, end), equal exactly where both are."""
+        return starts * (self.seq_len + 1) + ends
+
+    def add(self, starts, ends, extra_penalty=0.0, skip_duplicates: bool = True) -> None:
+        """Add candidates, keeping the order by start, then end.
+
+        starts and ends are ints or array-likes of equal length; extra_penalty is a scalar
+        for all of them or one value each. A candidate whose (start, end) is already
+        present is ignored if skip_duplicates, otherwise its penalty replaces the stored
+        one. Repeats within the added batch follow the same rule in the order given.
+        """
+        new_starts, new_ends = self._pairs(starts, ends)
         try:
             new_penalty = np.broadcast_to(np.asarray(extra_penalty, dtype=np.float64),
                                           new_starts.shape)
@@ -93,6 +106,26 @@ class Candidates:
         self.ends = self._freeze(ends[keep])
         self.extra_penalty = self._freeze(penalty[keep])
 
+    def remove(self, starts, ends, missing_ok: bool = False) -> None:
+        """Remove the candidates at (start, end), given as for add.
+
+        One that is not present raises KeyError, and nothing is removed, unless missing_ok,
+        which skips it. The sentinels cannot be removed: like add, remove takes only real
+        overlaps, 0 <= start < end <= seq_len.
+        """
+        drop_starts, drop_ends = self._pairs(starts, ends)
+        keys = self._keys(self.starts, self.ends)
+        drop = self._keys(drop_starts, drop_ends)
+        if not missing_ok:
+            absent = ~np.isin(drop, keys)
+            if absent.any():
+                missing = list(zip(drop_starts[absent].tolist(), drop_ends[absent].tolist()))
+                raise KeyError(f"No candidate at {missing}")
+        keep = ~np.isin(keys, drop)
+        self.starts = self._freeze(self.starts[keep])
+        self.ends = self._freeze(self.ends[keep])
+        self.extra_penalty = self._freeze(self.extra_penalty[keep])
+
     def __len__(self) -> int:
         """The number of entries, the two sentinels included."""
         return len(self.starts)
@@ -110,6 +143,13 @@ class Candidates:
         return f"Candidates({self.n_overlaps} overlaps)"
 
 
+class _Generation(NamedTuple):
+    """The last generation of a level's candidates (see Overlaps.generate_candidates)."""
+    candidates: Candidates  # what it produced, with the overlaps added by hand merged in
+    state: tuple            # what they depend on, as it was then (Overlaps._generation_state)
+    own: Candidates         # what the generation itself produced, before that merge
+
+
 @dataclass
 class Overlaps:
     """Every potential overlap of a sequence, together with the conditions scored on it.
@@ -118,9 +158,13 @@ class Overlaps:
     grid can be wider than this level's, and each condition reads a view of the shared
     map cut down to this level's grid. Without a store the level gets one of its own.
 
-    Generated candidates remember the conditions they were generated from, so the level
-    can tell when they are out of date (see candidates_stale). Overlaps added by hand are
-    kept apart in manual and merged back into every new generation.
+    Generated candidates remember the conditions and the min_step they were generated
+    from, so the level can tell when they are out of date (see candidates_stale). Overlaps
+    added by hand are kept apart in manual and merged back into every new generation,
+    until remove_candidates takes them out again.
+
+    min_step can be changed at any time; it is checked on assignment, and a step of 1,
+    which thins nothing, is stored as None.
     """
     seq: str
     min_len: int # miminal overlap length
@@ -133,8 +177,7 @@ class Overlaps:
 
     grid: OverlapGrid = field(init=False, repr=False)
     manual: Candidates = field(init=False, repr=False)  # the overlaps added by hand
-    # the last generated candidates, with the (condition, version) pairs they came from
-    _generated: tuple[Candidates, tuple] | None = field(default=None, init=False, repr=False)
+    _generated: _Generation | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.grid = OverlapGrid(len(self.seq), self.min_len, self.max_len)
@@ -145,8 +188,23 @@ class Overlaps:
             if self.maps.seq != self.seq:
                 raise ValueError("The map store is for a different sequence")
             self.maps.grid.slices(self.grid)  # raises unless this level fits the store's grid
-        if self.min_step == 1:
-            self.min_step = None  # no thinning needed if min_step is 1
+
+    def __setattr__(self, name: str, value) -> None:
+        if name == "min_step":  # in __init__ too
+            value = self._check_min_step(value)
+        super().__setattr__(name, value)
+
+    @staticmethod
+    def _check_min_step(min_step) -> int | None:
+        """min_step as stored: None, or an int of at least 2. A step of 1 thins nothing,
+        so it is stored as None; a step below 1 is refused, as _thin cannot apply it."""
+        if min_step is None:
+            return None
+        if isinstance(min_step, bool) or not isinstance(min_step, (int, np.integer)):
+            raise TypeError(f"min_step must be a positive int or None, got {min_step!r}")
+        if min_step <= 0:
+            raise ValueError(f"min_step must be positive, got {min_step}")
+        return None if min_step == 1 else int(min_step)
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -233,43 +291,72 @@ class Overlaps:
 
         rows, cols = np.nonzero(~np.isinf(penalties))
         starts, ends = self.grid.overlap(rows, cols)
-        candidates = Candidates(len(self.seq), starts, ends, penalties[rows, cols])
-        m = self.manual
-        candidates.add(m.starts[1:-1], m.ends[1:-1], m.extra_penalty[1:-1], skip_duplicates=False)
+        own = Candidates(len(self.seq), starts, ends, penalties[rows, cols])
+        candidates = self._with_manual(own)
 
         self.candidates = candidates
-        self._generated = (candidates, self._conditions_state())
+        self._generated = _Generation(candidates, self._generation_state(), own)
         return candidates
 
-    def _conditions_state(self) -> tuple:
-        """What the candidates depend on: each condition and the version of its thresholds."""
-        return tuple((c, c.version) for c in self.conditions)
+    def _with_manual(self, own: Candidates) -> Candidates:
+        """own with the overlaps added by hand merged in, as a separate Candidates; they
+        replace any of own at the same start and end. own is left as it is."""
+        merged = copy.copy(own)  # the arrays are read-only and add replaces them, so sharing is safe
+        m = self.manual
+        if m.n_overlaps:
+            merged.add(m.starts[1:-1], m.ends[1:-1], m.extra_penalty[1:-1], skip_duplicates=False)
+        return merged
+
+    def _generation_state(self) -> tuple:
+        """What the candidates depend on: min_step, and each condition with the version of
+        its thresholds."""
+        return self.min_step, tuple((c, c.version) for c in self.conditions)
 
     @property
     def candidates_stale(self) -> bool:
         """Whether the candidates have to be (re)generated before use.
 
-        True when there are none yet, or when they were generated and the conditions have
-        changed since: a condition added, or the thresholds of one updated. Candidates
-        assigned directly rather than generated are taken as given and never stale.
+        True when there are none yet, or when they were generated and what they depend on
+        has changed since: a condition added, the thresholds of one updated, or min_step
+        changed. Candidates assigned directly rather than generated are taken as given and
+        never stale.
         """
         if self.candidates is None:
             return True
-        if self._generated is None or self._generated[0] is not self.candidates:
+        if self._generated is None or self._generated.candidates is not self.candidates:
             return False
-        return self._generated[1] != self._conditions_state()
+        return self._generated.state != self._generation_state()
 
     def add_candidates(self, starts, ends, extra_penalty=0.0) -> None:
         """Add overlaps by hand, e.g. to bridge a gap the constraints leave.
 
-        They are kept in manual and survive every regeneration of the candidates, and are
-        added to the current candidates too, if there are any. A hand-added overlap
-        replaces whatever is at the same start and end, an earlier hand-added one
-        included, so its extra_penalty is the one that applies.
+        They are kept in manual and survive every regeneration of the candidates (until
+        remove_candidates), and are added to the current candidates too, if there are any.
+        A hand-added overlap replaces whatever is at the same start and end, an earlier
+        hand-added one included, so its extra_penalty is the one that applies.
         """
         self.manual.add(starts, ends, extra_penalty, skip_duplicates=False)
         if self.candidates is not None:
             self.candidates.add(starts, ends, extra_penalty, skip_duplicates=False)
+
+    def remove_candidates(self, starts, ends) -> None:
+        """Remove overlaps added by hand (see add_candidates), given as for add_candidates.
+
+        They are dropped from manual, so later generations no longer bring them back, and
+        from the current candidates. Where one had replaced a generated candidate at the
+        same start and end, that one is back, with its own extra_penalty. Removing does not
+        make the candidates stale. Raises KeyError, and changes nothing, if one of them was
+        not added by hand.
+        """
+        self.manual.remove(starts, ends)
+        if self.candidates is None:
+            return
+        generated = self._generated
+        if generated is not None and generated.candidates is self.candidates:
+            self.candidates = self._with_manual(generated.own)
+            self._generated = generated._replace(candidates=self.candidates)
+        else:  # assigned directly: taken as given, so only the removed overlaps go
+            self.candidates.remove(starts, ends, missing_ok=True)
 
     def _require_candidates(self) -> Candidates:
         if self.candidates is None:
@@ -382,6 +469,8 @@ class Fragmentor:
     max_fragment_overlap_len: InitVar[int | None] = None
     min_fragment_len: int | None = None
     max_fragment_len: int | None = None
+    # what both levels start with; each level's can be changed later on its own
+    # (segment_overlaps.min_step, fragment_overlaps.min_step), and this one does not follow
     min_step: int | None = None
 
     grid: OverlapGrid = field(init=False, repr=False)  # spans the overlap lengths of both levels
@@ -394,8 +483,7 @@ class Fragmentor:
         self.seq = check_seq(self.seq.upper())
         self.seq_len = len(self.seq)
 
-        if self.min_step is not None and self.min_step <= 0:
-            raise ValueError(f"min_step must be positive, got {self.min_step}")
+        Overlaps._check_min_step(self.min_step)  # early, before the lengths; the levels check it again
 
         max_segment_overlap_len = self._check_lengths(
             "segment",
@@ -598,6 +686,33 @@ class Fragmentor:
     def add_candidates(self, starts, ends, extra_penalty=0.0, fragment: bool = False) -> None:
         """Add overlaps by hand; they survive regeneration (see Overlaps.add_candidates)."""
         self._level(fragment).add_candidates(starts, ends, extra_penalty)
+
+    def remove_candidates(self, starts, ends, fragment: bool = False) -> None:
+        """Remove overlaps added by hand (see Overlaps.remove_candidates)."""
+        self._level(fragment).remove_candidates(starts, ends)
+
+    def explore(self, fragment: bool = False, show: int | str | list[int | str] | None = None,
+                a: int = 0, b: int | None = None, row_height: int = 280):
+        """An interactive editor of the level's conditions and candidates: a notebook widget,
+        which needs the `gui` extra (see choppy.explorer).
+
+        Each shown condition gets a plot of its row minima, as plot_rows draws them, with
+        its thresholds, the bounds of its relaxed versions over the starts they apply to,
+        and the candidates with the gaps between them. Next to the plot are its thresholds,
+        area and relaxed versions, all editable. Edits act on this Fragmentor directly;
+        the candidates are regenerated only by the button, never by an edit.
+
+        show picks the conditions shown at first, by position in the level's conditions
+        (objectives included, unlike plot_rows) or by name, mixed freely; the first four by
+        default, and the rest can be ticked in the list. [a, b) is the range of overlap
+        starts in view at first (all by default); every start is plotted, so the view can
+        be zoomed out from there. row_height is the height in pixels of each condition's
+        plot and panel.
+        """
+        level = self._level(fragment)  # raises if there is no fragment level, extra or not
+        from choppy.explorer import LevelExplorer
+        return LevelExplorer(level, self._lengths(fragment), name="fragment" if fragment else "segment",
+                             show=show, a=a, b=b, row_height=row_height)
 
     def chop(self) -> Assembly:
         """Cut the sequence into segments at candidate overlaps, at the lowest cost.
