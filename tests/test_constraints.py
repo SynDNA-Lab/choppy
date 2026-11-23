@@ -945,6 +945,41 @@ def test_plot_rows_does_not_shade_without_an_area_or_outside_the_range(plt, grid
     assert shaded_spans(c.plot_rows(0, 20)) == []
 
 
+def test_plot_rows_draws_the_bounds_of_a_relaxed_version_over_its_rows(plt, grid):
+    c = bound(ConstScorer(fill=0.3), "A" * grid.seq_len, grid, min_val=0.2, max_val=0.5,
+              start=10, end=30)
+    rid = c.add_relaxed(min_val=0.1, max_val=0.9, extra_penalty=2.0, start=15, end=30)
+    ax = c.plot_rows(0, 40)
+    rows = c.relaxed_rows(c.relaxed[0])
+    lines = [(line.get_label(), list(line.get_xdata()), list(line.get_ydata()))
+             for line in ax.lines if line.get_xdata()[0] == rows[0] - 0.5]
+    assert [ys for _, _, ys in lines] == [[0.1, 0.1], [0.9, 0.9]]
+    assert all(xs == [rows[0] - 0.5, rows[1] + 0.5] for _, xs, _ in lines)
+    # one legend entry per version, whatever the number of bounds
+    assert ax.get_legend_handles_labels()[1].count(f"relaxed #{rid} (+2)") == 1
+
+
+def test_plot_rows_draws_only_the_bounds_a_relaxed_version_sets(plt, grid):
+    c = bound(ConstScorer(fill=0.3), "A" * grid.seq_len, grid, min_val=0.2, max_val=0.5)
+    c.add_relaxed(max_val=0.9)  # min_val follows the main one, so it is already drawn
+    ax = c.plot_rows(0, 20)
+    assert [list(line.get_ydata()) for line in ax.lines
+            if "relaxed" in line.get_label()] == [[0.9, 0.9]]
+
+
+def test_plot_rows_clips_relaxed_bounds_to_the_view_and_skips_those_outside(plt, grid):
+    c = bound(ConstScorer(fill=0.3), "A" * grid.seq_len, grid, max_val=0.5)
+    c.add_relaxed(max_val=0.9, start=10, end=grid.seq_len)
+    inside, = [line for line in c.plot_rows(0, 15).lines if "relaxed" in line.get_label()]
+    assert list(inside.get_xdata()) == [9.5, 14.5]
+    assert [line for line in c.plot_rows(0, 5).lines if "relaxed" in line.get_label()] == []
+
+
+def test_plot_rows_draws_nothing_relaxed_without_relaxed_versions(plt, grid):
+    c = bound(ConstScorer(fill=0.3), "A" * grid.seq_len, grid, max_val=0.5)
+    assert [line for line in c.plot_rows(0, 20).lines if "relaxed" in line.get_label()] == []
+
+
 def test_plot_rows_uses_given_axes(plt, grid):
     c = bound(ConstScorer(), "A" * grid.seq_len, grid, max_val=0.5)
     _, ax = plt.subplots()

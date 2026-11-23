@@ -100,9 +100,16 @@ A scorer plus thresholds. Fields: `scorer`, `min_val`, `max_val`, `opt_val`, `st
 - `_plot_thresholds(ax)`: draws horizontal threshold lines.
 - `area_rows()`: the overlap starts the area applies to (`OverlapGrid.rows_inside`), or
   `None` without an area. `_plot_area(ax, a, b)` shades them.
+- `relaxed_rows(r)`: the overlap starts where relaxed version `r` can matter — its area
+  within the condition's. Used by `_plot_relaxed` and by the explorer's `relaxed_rows`.
+- `_plot_relaxed(ax, a, b)`: each relaxed version's own bounds (a bound it leaves `None`
+  follows the main threshold and is not redrawn) as a horizontal segment over
+  `relaxed_rows`, clipped to `[a, b)`, labelled `#id`, one legend entry per version and
+  one colour each from `_RELAXED_COLORS`.
 - `row_minima(a, b)`: the minimum score per overlap start, in the scorer's units (NaN for a
   start with no usable overlap). What `plot_rows` and the explorer draw.
-- `plot_rows(a, b, ax)`: scatter of `row_minima`.
+- `plot_rows(a, b, ax)`: scatter of `row_minima`, with the thresholds, the area wash and
+  the relaxed bounds.
 
 ### `MapStore`
 
@@ -306,7 +313,7 @@ anywidget); importing the module without it raises an `ImportError` naming the e
 | `parse_value(text, kind)` | A field's text as a value: `""`/`"none"` → `None`, else a float or a whole int; `ValueError` otherwise. |
 | `format_value(value)` | The reverse, for showing stored values (`None` → `""`). |
 | `coverage(starts, ends)` | The union of `[start, end)` intervals as runs (starts, ends, counts): a candidate lane's thick strokes. |
-| `relaxed_rows(condition, r)` | The overlap starts where relaxed version `r` can matter: its area within the condition's (`rows_inside`). |
+| `relaxed_rows(condition, r)` | The overlap starts where relaxed version `r` can matter; delegates to `Condition.relaxed_rows`. |
 | `describe_relaxed(r)` | One line for a relaxed version: id, bounds it sets, penalty, area. |
 | `_attempt(action)` | Runs an edit, catching what a refused one raises and recording warnings. |
 | `_Geometry` | Pixel layout of the blocks: each condition gets `row_height` px (title strip, score panel, gap, lanes, tick space), so the fixed-height panels stay level with them. |

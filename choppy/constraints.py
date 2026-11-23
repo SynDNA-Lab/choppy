@@ -246,6 +246,9 @@ class Relaxed(NamedTuple):
     end: int | None
 
 
+# the colours of the relaxed versions in plot_rows, cycled per condition
+_RELAXED_COLORS = ("tab:pink", "tab:orange", "tab:olive")
+
 THRESHOLDS = ("min_val", "max_val", "opt_val", "start", "end")
 _UNSET = object()  # "not given" for Condition.update, where None means "remove"
 
@@ -562,6 +565,34 @@ class Condition:
             return None
         return self.grid.rows_inside(self.start, self.end)
 
+    def relaxed_rows(self, r: Relaxed) -> tuple[int, int] | None:
+        """The overlap starts [first, last] where relaxed version r can change anything: its
+        own area within the condition's, since outside that every overlap is admitted
+        already. None when no overlap fits there."""
+        starts = [v for v in (self.start, r.start) if v is not None]
+        ends = [v for v in (self.end, r.end) if v is not None]
+        return self.grid.rows_inside(max(starts, default=None), min(ends, default=None))
+
+    def _plot_relaxed(self, ax, a: int, b: int) -> None:
+        """The bounds of each relaxed version, over the overlap starts in [a, b) it applies
+        to; a bound it leaves None follows the main threshold and is not drawn again."""
+        for k, r in enumerate(sorted(self.relaxed, key=lambda r: r.id)):
+            rows = self.relaxed_rows(r)
+            bounds = [float(v) for v in (r.min_val, r.max_val) if v is not None]
+            if rows is None or not bounds:
+                continue
+            lo, hi = max(rows[0], a), min(rows[1], b - 1)
+            if lo > hi:
+                continue
+            color = _RELAXED_COLORS[k % len(_RELAXED_COLORS)]
+            label = f"relaxed #{r.id} (+{r.extra_penalty:g})"
+            for value in bounds:
+                ax.plot([lo - 0.5, hi + 0.5], [value, value], color=color, linewidth=2,
+                        zorder=2, label=label)
+                ax.annotate(f"#{r.id}", (lo - 0.5, value), color=color, fontsize=8,
+                            xytext=(2, 2), textcoords="offset points")
+                label = None  # one legend entry per version, not per bound
+
     def _plot_area(self, ax, a: int, b: int) -> None:
         """Shade the overlap starts in [a, b) that the area applies to."""
         rows = self.area_rows()
@@ -607,6 +638,7 @@ class Condition:
         ax.scatter(np.arange(a, b), best, s=8, color="tab:blue", label="min score", zorder=3)
         self._plot_area(ax, a, b)
         self._plot_thresholds(ax)
+        self._plot_relaxed(ax, a, b)
         ax.set_xlabel("overlap start")
         ax.set_ylabel("score")
         ax.set_title(f"{self.label}: overlaps starting in [{a}, {b})")

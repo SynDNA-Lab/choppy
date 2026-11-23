@@ -78,6 +78,8 @@ rid = self_hom.add_relaxed(max_val=4.0, extra_penalty=1.0, start=a, end=b)
 print("relaxed version", rid, ":", self_hom.relaxed[-1])
 print("candidates now stale:", f.segment_overlaps.candidates_stale)
 
+# The plots read the condition live: the relaxed ceiling is drawn over the starts it
+# applies to, labelled with its id, beside the main threshold.
 f.plot_rows(indices=["self"], a=a-1000, b=b+1000)
 # %%
 asm = f.chop()

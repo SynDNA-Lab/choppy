@@ -112,12 +112,9 @@ def coverage(starts, ends) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 
 def relaxed_rows(condition: Condition, r: Relaxed) -> tuple[int, int] | None:
-    """The overlap starts where relaxed version r of condition can change anything: its own
-    area within the condition's, since outside that the condition admits every overlap.
-    None when no overlap fits there."""
-    starts = [v for v in (condition.start, r.start) if v is not None]
-    ends = [v for v in (condition.end, r.end) if v is not None]
-    return condition.grid.rows_inside(max(starts, default=None), min(ends, default=None))
+    """The overlap starts where relaxed version r of condition can change anything
+    (Condition.relaxed_rows), or None when no overlap fits there."""
+    return condition.relaxed_rows(r)
 
 
 def describe_relaxed(r: Relaxed) -> str:
